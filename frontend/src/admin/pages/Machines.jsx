@@ -5,88 +5,37 @@ import AdminLayout from '../components/AdminLayout'
 import ConfirmModal from '../components/ConfirmModal'
 import { useToast } from '../components/Toast'
 
-function DetailModal({ machine, onClose }) {
-  if (!machine) return null
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b sticky top-0 bg-white">
-          <h3 className="font-semibold text-gray-800 text-sm truncate mr-4">{machine.name}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl flex-shrink-0">✕</button>
-        </div>
-        <div className="p-6 space-y-4">
-          {machine.image_url && (
-            <img src={machine.image_url} alt="" className="w-32 h-24 object-cover rounded-lg border" onError={e => e.target.style.display='none'} />
-          )}
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            {[
-              ['ID', machine.id],
-              ['Brand', machine.brand],
-              ['Price', machine.price ? `${machine.price} ${machine.currency}` : '—'],
-              ['Location', machine.location],
-              ['Site', machine.site_name],
-              ['Language', machine.language],
-              ['Views', machine.view_count],
-              ['Clicks', machine.click_count],
-              ['Created', machine.created_at ? new Date(machine.created_at).toLocaleString() : '—'],
-            ].map(([k, v]) => (
-              <div key={k}><span className="text-gray-500">{k}:</span> <span className="text-gray-800">{v ?? '—'}</span></div>
-            ))}
-          </div>
-          {machine.description && (
-            <div>
-              <p className="text-xs font-medium text-gray-500 mb-1">Description</p>
-              <p className="text-sm text-gray-700 bg-gray-50 rounded-lg p-3">{machine.description}</p>
-            </div>
-          )}
-          {machine.source_url && (
-            <a href={machine.source_url} target="_blank" rel="noreferrer"
-              className="inline-flex items-center gap-2 text-blue-600 text-sm hover:underline">
-              🔗 View source
-            </a>
-          )}
-          {machine.specs && Object.keys(machine.specs).length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-gray-500 mb-2">Specs</p>
-              <table className="w-full text-xs border border-gray-100 rounded-lg overflow-hidden">
-                <tbody>
-                  {Object.entries(machine.specs).map(([k, v]) => (
-                    <tr key={k} className="border-b border-gray-50">
-                      <td className="px-3 py-1.5 bg-gray-50 font-medium text-gray-600 w-1/3">{k}</td>
-                      <td className="px-3 py-1.5 text-gray-700">{String(v)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
+const PAGE_SIZE = 50
 
 export default function Machines() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [siteFilter, setSiteFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
+  const [brandFilter, setBrandFilter] = useState('')
+  const [selectedIds, setSelectedIds] = useState([])
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [bulkDeleteSite, setBulkDeleteSite] = useState(null)
-  const [detailMachine, setDetailMachine] = useState(null)
+  const [showBulkConfirm, setShowBulkConfirm] = useState(false)
 
   const qc = useQueryClient()
   const toast = useToast()
 
-  // Debounce search
   useEffect(() => {
     const t = setTimeout(() => { setDebouncedSearch(search); setPage(1) }, 400)
     return () => clearTimeout(t)
   }, [search])
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['machines', page, debouncedSearch, siteFilter],
-    queryFn: () => getMachines({ page, limit: 25, search: debouncedSearch || undefined, site_name: siteFilter || undefined }),
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ['machines', page, debouncedSearch, typeFilter, brandFilter],
+    queryFn: () => getMachines({
+      page,
+      limit: PAGE_SIZE,
+      search: debouncedSearch || undefined,
+      site_name: typeFilter || undefined,
+      brand: brandFilter || undefined,
+    }),
   })
 
   const { data: configsData } = useQuery({
@@ -94,13 +43,13 @@ export default function Machines() {
     queryFn: getSiteConfigs,
   })
 
-  const delMut = useMutation({
+  const delOne = useMutation({
     mutationFn: deleteMachine,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['machines'] }); toast('Machine deleted', 'success') },
     onError: e => toast(e.response?.data?.detail || 'Delete failed', 'error'),
   })
 
-  const bulkMut = useMutation({
+  const delBySite = useMutation({
     mutationFn: deleteBySite,
     onSuccess: d => { qc.invalidateQueries({ queryKey: ['machines'] }); toast(`Deleted ${d.deleted} machines`, 'success') },
     onError: e => toast(e.response?.data?.detail || 'Bulk delete failed', 'error'),
@@ -108,53 +57,114 @@ export default function Machines() {
 
   const machines = data?.machines || []
   const total = data?.total || 0
-  const totalPages = Math.ceil(total / 25)
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const sites = configsData?.configs?.map(c => c.name) || []
+  const brands = [...new Set(machines.map(m => m.brand).filter(Boolean))].sort()
+
+  const allSelected = machines.length > 0 && machines.every(m => selectedIds.includes(m.id))
+  const toggleAll = () => setSelectedIds(allSelected ? [] : machines.map(m => m.id))
+  const toggleOne = (id) => setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
 
   const formatPrice = (m) => {
     if (!m.price) return '—'
-    return `${m.currency || ''} ${m.price.toLocaleString()}`
+    return `${m.currency || ''} ${Number(m.price).toLocaleString()}`.trim()
+  }
+
+  const handleClear = () => {
+    setSearch(''); setTypeFilter(''); setBrandFilter(''); setStatusFilter(''); setPage(1); setSelectedIds([])
+  }
+
+  // Page number buttons (show up to 7 around current)
+  const pageButtons = () => {
+    const pages = []
+    const start = Math.max(1, Math.min(page - 3, totalPages - 6))
+    const end = Math.min(totalPages, start + 6)
+    for (let i = start; i <= end; i++) pages.push(i)
+    return pages
   }
 
   return (
     <AdminLayout>
       <div className="space-y-4">
-        {/* Top bar */}
-        <div className="flex flex-wrap items-center gap-3">
+        {/* Header row */}
+        <div className="flex flex-wrap items-center gap-2 justify-between">
+          <h1 className="text-lg font-bold text-gray-900">Machines ({total.toLocaleString()})</h1>
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Show per page */}
+            <div className="flex items-center gap-1 text-sm text-gray-600">
+              <span>Show:</span>
+              <span className="font-medium">{PAGE_SIZE}</span>
+            </div>
+            {/* Page info */}
+            <span className="text-sm text-gray-500">Page {page} of {totalPages}</span>
+            {/* Prev/Next */}
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}
+              className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40 transition-colors">
+              ← Prev
+            </button>
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
+              className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40 transition-colors">
+              Next →
+            </button>
+            {/* Action buttons */}
+            <button className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors text-gray-700">
+              Columns
+            </button>
+            <button className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
+              + Add Machine
+            </button>
+            <button className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors text-gray-700">
+              Fill Types
+            </button>
+            <button className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors text-gray-700">
+              Export
+            </button>
+            <button onClick={handleClear}
+              className="px-3 py-1.5 text-sm border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors">
+              Clear
+            </button>
+          </div>
+        </div>
+
+        {/* Filter row */}
+        <div className="flex flex-wrap items-center gap-2">
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search name or brand…"
-            className="border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 w-64"
+            placeholder="Search SKU / model…"
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 w-52"
           />
-          <select
-            value={siteFilter}
-            onChange={e => { setSiteFilter(e.target.value); setPage(1) }}
-            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-          >
-            <option value="">All sites</option>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
+            <option value="">All Status</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+          <select value={typeFilter} onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
+            <option value="">All Types</option>
             {sites.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
-          <span className="text-sm text-gray-500 ml-auto">Total: {total.toLocaleString()} machines</span>
+          <select value={brandFilter} onChange={e => { setBrandFilter(e.target.value); setPage(1) }}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
+            <option value="">All Brands</option>
+            {brands.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+          <button onClick={() => refetch()}
+            className="px-3 py-2 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors text-gray-600 text-sm">
+            ↻ Refresh
+          </button>
+          {selectedIds.length > 0 && (
+            <button onClick={() => setShowBulkConfirm(true)}
+              className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm transition-colors">
+              Delete {selectedIds.length} selected
+            </button>
+          )}
         </div>
 
-        {/* Bulk delete bar */}
-        {siteFilter && (
-          <div className="flex items-center justify-between bg-orange-50 border border-orange-200 rounded-xl px-4 py-3">
-            <span className="text-sm text-orange-700">
-              Showing machines from <strong>{siteFilter}</strong>
-            </span>
-            <button
-              onClick={() => setBulkDeleteSite(siteFilter)}
-              className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs rounded-lg font-medium transition-colors"
-            >
-              Delete all from {siteFilter}
-            </button>
-          </div>
-        )}
-
+        {/* Table */}
         {isLoading ? (
-          <div className="flex justify-center py-12">
+          <div className="flex justify-center py-16">
             <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
           </div>
         ) : (
@@ -162,96 +172,134 @@ export default function Machines() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="bg-gray-50 border-b border-gray-100">
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Image</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Name</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Brand</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Price</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Location</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Site</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Date</th>
-                    <th className="text-right px-4 py-3 font-medium text-gray-600">Actions</th>
+                  <tr className="bg-gray-50 border-b border-gray-200">
+                    <th className="px-3 py-3 w-8">
+                      <input type="checkbox" checked={allSelected} onChange={toggleAll}
+                        className="rounded border-gray-300" />
+                    </th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Image</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Model</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Type</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Brand</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Location</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Price</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Premium</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Status</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">E-URL</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-50">
+                <tbody className="divide-y divide-gray-100">
                   {machines.map(m => (
-                    <tr key={m.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-2">
+                    <tr key={m.id} className={`hover:bg-gray-50 transition-colors ${selectedIds.includes(m.id) ? 'bg-blue-50' : ''}`}>
+                      <td className="px-3 py-2">
+                        <input type="checkbox" checked={selectedIds.includes(m.id)} onChange={() => toggleOne(m.id)}
+                          className="rounded border-gray-300" />
+                      </td>
+                      <td className="px-3 py-2">
                         {m.image_url ? (
                           <img src={m.image_url} alt="" className="w-10 h-10 object-cover rounded border bg-gray-100"
-                            onError={e => { e.target.onerror=null; e.target.src=''; e.target.className='w-10 h-10 rounded border bg-gray-100' }} />
+                            onError={e => { e.target.style.display = 'none' }} />
                         ) : (
-                          <div className="w-10 h-10 rounded border bg-gray-100 flex items-center justify-center text-gray-300 text-xs">?</div>
+                          <div className="w-10 h-10 rounded border bg-gray-100 flex items-center justify-center text-gray-300 text-xs">—</div>
                         )}
                       </td>
-                      <td className="px-4 py-2 max-w-xs">
-                        <p className="text-gray-800 truncate text-xs">{m.name}</p>
+                      <td className="px-3 py-2 max-w-[200px]">
+                        <p className="text-gray-800 truncate text-xs font-medium" title={m.name}>{m.name}</p>
+                        <p className="text-gray-400 text-xs">#{m.id}</p>
                       </td>
-                      <td className="px-4 py-2 text-gray-600 text-xs">{m.brand || '—'}</td>
-                      <td className="px-4 py-2 text-gray-700 text-xs whitespace-nowrap">{formatPrice(m)}</td>
-                      <td className="px-4 py-2 text-gray-600 text-xs">{m.location || '—'}</td>
-                      <td className="px-4 py-2"><span className="bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded">{m.site_name}</span></td>
-                      <td className="px-4 py-2 text-gray-500 text-xs whitespace-nowrap">
-                        {m.created_at ? new Date(m.created_at).toLocaleDateString() : '—'}
+                      <td className="px-3 py-2 text-xs text-gray-600">{m.site_name || '—'}</td>
+                      <td className="px-3 py-2 text-xs text-gray-600">{m.brand || '—'}</td>
+                      <td className="px-3 py-2 text-xs text-gray-600">{m.location || '—'}</td>
+                      <td className="px-3 py-2 text-xs text-gray-800 whitespace-nowrap font-medium">{formatPrice(m)}</td>
+                      <td className="px-3 py-2">
+                        <span className="text-xs text-gray-400">No</span>
                       </td>
-                      <td className="px-4 py-2">
-                        <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => setDetailMachine(m)}
-                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors text-xs">👁</button>
-                          <button onClick={() => setDeleteTarget(m.id)}
-                            className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors text-xs">🗑</button>
-                        </div>
+                      <td className="px-3 py-2">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                          Active
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        {m.source_url ? (
+                          <a href={m.source_url} target="_blank" rel="noreferrer"
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-gray-200 text-blue-500 hover:bg-blue-50 transition-colors"
+                            title="View source">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                            </svg>
+                          </a>
+                        ) : (
+                          <span className="text-gray-300 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <button onClick={() => setDeleteTarget(m.id)}
+                          className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
+                          title="Delete">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        </button>
                       </td>
                     </tr>
                   ))}
                   {machines.length === 0 && (
-                    <tr><td colSpan={8} className="text-center py-8 text-gray-400">No machines found</td></tr>
+                    <tr>
+                      <td colSpan={11} className="text-center py-12 text-gray-400">No machines found</td>
+                    </tr>
                   )}
                 </tbody>
               </table>
             </div>
 
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-between px-5 py-4 border-t border-gray-100">
-                <p className="text-sm text-gray-500">Page {page} of {totalPages}</p>
-                <div className="flex gap-2">
-                  <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}
-                    className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm disabled:opacity-40 hover:bg-gray-50 transition-colors">← Prev</button>
-                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                    const pg = Math.max(1, Math.min(page - 2, totalPages - 4)) + i
-                    return (
-                      <button key={pg} onClick={() => setPage(pg)}
-                        className={`px-3 py-1.5 border rounded-lg text-sm transition-colors ${pg === page ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-200 hover:bg-gray-50'}`}>
-                        {pg}
-                      </button>
-                    )
-                  })}
-                  <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}
-                    className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm disabled:opacity-40 hover:bg-gray-50 transition-colors">Next →</button>
-                </div>
+            {/* Bottom pagination */}
+            <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
+              <p className="text-sm text-gray-500">
+                {((page - 1) * PAGE_SIZE) + 1}–{Math.min(page * PAGE_SIZE, total)} of {total.toLocaleString()} machines
+              </p>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage(1)} disabled={page <= 1}
+                  className="px-2 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors">«</button>
+                <button onClick={() => setPage(p => p - 1)} disabled={page <= 1}
+                  className="px-3 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors">‹ Prev</button>
+                {pageButtons().map(pg => (
+                  <button key={pg} onClick={() => setPage(pg)}
+                    className={`px-3 py-1.5 border rounded-lg text-xs transition-colors ${pg === page ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                    {pg}
+                  </button>
+                ))}
+                <button onClick={() => setPage(p => p + 1)} disabled={page >= totalPages}
+                  className="px-3 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors">Next ›</button>
+                <button onClick={() => setPage(totalPages)} disabled={page >= totalPages}
+                  className="px-2 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors">»</button>
               </div>
-            )}
+            </div>
           </div>
         )}
       </div>
 
-      <DetailModal machine={detailMachine} onClose={() => setDetailMachine(null)} />
-
+      {/* Single delete confirm */}
       <ConfirmModal
         isOpen={!!deleteTarget}
         title="Delete Machine"
-        message="Are you sure you want to delete this machine?"
-        onConfirm={() => { delMut.mutate(deleteTarget); setDeleteTarget(null) }}
+        message="Are you sure you want to permanently delete this machine from the database?"
+        onConfirm={() => { delOne.mutate(deleteTarget); setDeleteTarget(null) }}
         onCancel={() => setDeleteTarget(null)}
       />
 
+      {/* Bulk delete confirm */}
       <ConfirmModal
-        isOpen={!!bulkDeleteSite}
-        title="Bulk Delete"
-        message={`Delete ALL machines from "${bulkDeleteSite}"? This cannot be undone.`}
-        onConfirm={() => { bulkMut.mutate(bulkDeleteSite); setBulkDeleteSite(null); setSiteFilter('') }}
-        onCancel={() => setBulkDeleteSite(null)}
+        isOpen={showBulkConfirm}
+        title="Delete Selected Machines"
+        message={`Permanently delete ${selectedIds.length} selected machine(s) from the database? This cannot be undone.`}
+        onConfirm={async () => {
+          for (const id of selectedIds) await delOne.mutateAsync(id).catch(() => {})
+          setSelectedIds([])
+          setShowBulkConfirm(false)
+          qc.invalidateQueries({ queryKey: ['machines'] })
+        }}
+        onCancel={() => setShowBulkConfirm(false)}
       />
     </AdminLayout>
   )

@@ -4,99 +4,100 @@ import {
   getSiteConfigs, createConfig, updateConfig, deleteConfig, toggleConfig, startScrape,
 } from '../api/adminClient'
 import AdminLayout from '../components/AdminLayout'
-import StatusBadge from '../components/StatusBadge'
 import ConfirmModal from '../components/ConfirmModal'
 import { useToast } from '../components/Toast'
 
-const NEW_TEMPLATE = {
-  name: '', display_name: '', start_url: '', language: 'en',
-  pagination: true, pagination_type: 'page_param', pagination_param: 'page',
-  max_pages: 20, detail_page: false, mode: 'static', proxy_tier: 'none',
-  rate_limit_delay: 2, enabled: true, base_url: '',
-  selectors: {
-    listing_container: '', name: '', price: '', image: '',
-    location: '', detail_link: '', next_page: '',
-  },
-}
+const EMPTY_FORM = { name: '', start_url: '', display_name: '' }
 
-function ConfigModal({ isOpen, onClose, initial, isEdit }) {
-  const [jsonText, setJsonText] = useState(
-    () => JSON.stringify(initial || NEW_TEMPLATE, null, 2)
-  )
-  const [jsonError, setJsonError] = useState('')
+function AddSiteForm({ onSuccess }) {
+  const [form, setForm] = useState(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const qc = useQueryClient()
   const toast = useToast()
 
-  if (!isOpen) return null
+  const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }))
 
-  const handleChange = val => {
-    setJsonText(val)
-    try { JSON.parse(val); setJsonError('') }
-    catch (e) { setJsonError(e.message) }
-  }
-
-  const handleSave = async () => {
-    let parsed
-    try { parsed = JSON.parse(jsonText) }
-    catch { return }
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!form.name || !form.start_url) return
     setSaving(true)
     try {
-      if (isEdit) {
-        await updateConfig(parsed.name, parsed)
-        toast('Config updated', 'success')
-      } else {
-        await createConfig(parsed)
-        toast('Config created', 'success')
-      }
+      await createConfig({
+        name: form.name.trim(),
+        display_name: form.display_name.trim() || form.name.trim(),
+        start_url: form.start_url.trim(),
+        enabled: true,
+        pagination: true,
+        pagination_type: 'page_param',
+        pagination_param: 'page',
+        max_pages: 20,
+        detail_page: false,
+        mode: 'static',
+        proxy_tier: 'none',
+        rate_limit_delay: 2,
+        base_url: '',
+        selectors: { listing_container: '', name: '', price: '', image: '', location: '', detail_link: '', next_page: '' },
+      })
+      toast('Website added', 'success')
+      setForm(EMPTY_FORM)
       qc.invalidateQueries({ queryKey: ['configs'] })
-      onClose()
+      onSuccess?.()
     } catch (e) {
-      toast(e.response?.data?.detail || 'Save failed', 'error')
-    } finally { setSaving(false) }
+      toast(e.response?.data?.detail || 'Failed to add website', 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between px-6 py-4 border-b">
-          <h3 className="text-lg font-semibold text-gray-800">
-            {isEdit ? `Edit: ${initial?.name}` : 'Add New Site'}
-          </h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
-        </div>
-        <div className="flex-1 overflow-auto px-6 py-4">
-          <textarea
-            value={jsonText}
-            onChange={e => handleChange(e.target.value)}
-            className={`w-full h-96 font-mono text-xs p-3 rounded-lg border-2 transition-colors focus:outline-none ${
-              jsonError ? 'border-red-400 bg-red-50' : 'border-gray-200 focus:border-blue-400'
-            }`}
+    <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
+      <h2 className="text-base font-bold text-gray-900 mb-4">Add New Website</h2>
+      <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Name <span className="text-red-400">*</span></label>
+          <input
+            value={form.name}
+            onChange={e => set('name', e.target.value)}
+            placeholder="e.g. machineryzone"
+            required
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
           />
-          {jsonError && <p className="text-red-600 text-xs mt-1">{jsonError}</p>}
         </div>
-        <div className="flex justify-end gap-3 px-6 py-4 border-t">
-          <button onClick={onClose} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors">
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={!!jsonError || saving}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg transition-colors flex items-center gap-2"
-          >
-            {saving && <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-            Save
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">URL <span className="text-red-400">*</span></label>
+          <input
+            value={form.start_url}
+            onChange={e => set('start_url', e.target.value)}
+            placeholder="https://example.com/machines"
+            required
+            type="url"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Description / Display Name</label>
+          <input
+            value={form.display_name}
+            onChange={e => set('display_name', e.target.value)}
+            placeholder="Optional display name"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+        </div>
+        <div className="sm:col-span-3 flex justify-end">
+          <button type="submit" disabled={saving}
+            className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2">
+            {saving && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+            Add Website
           </button>
         </div>
-      </div>
+      </form>
     </div>
   )
 }
 
 export default function SiteConfigs() {
-  const [showAdd, setShowAdd] = useState(false)
-  const [editCfg, setEditCfg] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [editCfg, setEditCfg] = useState(null)
 
   const qc = useQueryClient()
   const toast = useToast()
@@ -114,7 +115,7 @@ export default function SiteConfigs() {
 
   const toggleMut = useMutation({
     mutationFn: toggleConfig,
-    onSuccess: d => { qc.invalidateQueries({ queryKey: ['configs'] }); toast(`${d.enabled ? 'Enabled' : 'Disabled'}`, 'success') },
+    onSuccess: d => { qc.invalidateQueries({ queryKey: ['configs'] }); toast(d.enabled ? 'Enabled' : 'Disabled', 'success') },
   })
 
   const scrapeMut = useMutation({
@@ -125,102 +126,110 @@ export default function SiteConfigs() {
 
   const configs = data?.configs || []
 
+  const fmt = (dt) => dt ? new Date(dt).toLocaleDateString() : '—'
+
   return (
     <AdminLayout>
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-gray-500">{configs.length} site{configs.length !== 1 ? 's' : ''}</p>
-          <button
-            onClick={() => setShowAdd(true)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg font-medium transition-colors"
-          >
-            + Add Site
-          </button>
-        </div>
+      <div>
+        <AddSiteForm />
 
-        {isLoading && (
-          <div className="flex justify-center py-12">
-            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+            <h2 className="text-base font-bold text-gray-900">Web Sources</h2>
+            <span className="text-sm text-gray-500">{configs.length} site{configs.length !== 1 ? 's' : ''}</span>
           </div>
-        )}
 
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4">
-            {error.message}
-          </div>
-        )}
+          {isLoading && (
+            <div className="flex justify-center py-12">
+              <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
 
-        {!isLoading && !error && (
-          <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 border-b border-gray-100">
-                  <th className="text-left px-4 py-3 font-medium text-gray-600">Name</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-600">Display Name</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-600">Status</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-600">Last Scraped</th>
-                  <th className="text-right px-4 py-3 font-medium text-gray-600">Machines</th>
-                  <th className="text-right px-4 py-3 font-medium text-gray-600">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {configs.map(cfg => (
-                  <tr key={cfg.name} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-4 py-3 font-mono text-xs text-gray-700">{cfg.name}</td>
-                    <td className="px-4 py-3 text-gray-800">{cfg.display_name || cfg.name}</td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={cfg.enabled ? 'active' : 'inactive'} />
-                    </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">
-                      {cfg.last_scraped
-                        ? new Date(cfg.last_scraped).toLocaleString()
-                        : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-right font-semibold text-gray-700">
-                      {cfg.machine_count?.toLocaleString() || 0}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          title="Scrape now"
-                          onClick={() => scrapeMut.mutate(cfg.name)}
-                          className="p-1.5 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                        >▶</button>
-                        <button
-                          title="Edit"
-                          onClick={() => setEditCfg(cfg)}
-                          className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                        >✏</button>
-                        <button
-                          title={cfg.enabled ? 'Disable' : 'Enable'}
-                          onClick={() => toggleMut.mutate(cfg.name)}
-                          className="p-1.5 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                        >{cfg.enabled ? '⏸' : '▷'}</button>
-                        <button
-                          title="Delete"
-                          onClick={() => setDeleteTarget(cfg.name)}
-                          className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                        >🗑</button>
-                      </div>
-                    </td>
+          {error && (
+            <div className="m-4 bg-red-50 border border-red-200 text-red-700 rounded-xl p-4">{error.message}</div>
+          )}
+
+          {!isLoading && !error && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-200">
+                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Name / URL</th>
+                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Status</th>
+                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Discovered</th>
+                    <th className="text-right px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">URLs</th>
+                    <th className="text-right px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Extracted</th>
+                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Last Crawl</th>
+                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Actions</th>
                   </tr>
-                ))}
-                {configs.length === 0 && (
-                  <tr><td colSpan={6} className="text-center py-8 text-gray-400">No configs found</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {configs.map(cfg => (
+                    <tr key={cfg.name} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-4 py-3">
+                        <p className="font-semibold text-gray-800 text-sm">{cfg.display_name || cfg.name}</p>
+                        <p className="text-xs text-blue-500 hover:underline truncate max-w-xs">
+                          <a href={cfg.start_url} target="_blank" rel="noreferrer">{cfg.start_url || cfg.name}</a>
+                        </p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          cfg.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                        }`}>
+                          {cfg.enabled ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500">{fmt(cfg.created_at)}</td>
+                      <td className="px-4 py-3 text-right text-sm font-medium text-gray-700">
+                        {(cfg.machine_count || 0).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-right text-sm font-medium text-gray-700">
+                        {(cfg.machine_count || 0).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500">{fmt(cfg.last_scraped)}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => scrapeMut.mutate(cfg.name)}
+                            disabled={scrapeMut.isPending}
+                            title="Start crawl"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white text-xs rounded-lg transition-colors font-medium">
+                            ▶ Run
+                          </button>
+                          <button
+                            onClick={() => toggleMut.mutate(cfg.name)}
+                            title={cfg.enabled ? 'Disable' : 'Enable'}
+                            className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-lg transition-colors text-xs">
+                            {cfg.enabled ? '⏸' : '▷'}
+                          </button>
+                          <button
+                            onClick={() => setDeleteTarget(cfg.name)}
+                            title="Delete"
+                            className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {configs.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="text-center py-10 text-gray-400">No websites configured yet</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
-
-      <ConfigModal isOpen={showAdd} onClose={() => setShowAdd(false)} isEdit={false} />
-      <ConfigModal isOpen={!!editCfg} onClose={() => setEditCfg(null)} initial={editCfg} isEdit />
 
       <ConfirmModal
         isOpen={!!deleteTarget}
-        title="Delete Config"
-        message={`Are you sure you want to delete "${deleteTarget}"?`}
+        title="Delete Website"
+        message={`Remove "${deleteTarget}" from web sources? This will not delete the machines already scraped from this site.`}
         onConfirm={() => { deleteMut.mutate(deleteTarget); setDeleteTarget(null) }}
         onCancel={() => setDeleteTarget(null)}
       />
