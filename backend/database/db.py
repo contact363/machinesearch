@@ -28,6 +28,12 @@ DATABASE_URL: str = os.getenv(
     "postgresql+asyncpg://user:password@localhost:5432/machinesearch",
 )
 
+# Fix Render's postgres:// to postgresql+asyncpg://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
