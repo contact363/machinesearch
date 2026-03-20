@@ -536,7 +536,7 @@ async def auto_detect_config(
         "pagination": True,
         "pagination_type": "page_param",
         "pagination_param": "page",
-        "max_pages": 20,
+        "max_pages": 50,
         "detail_page": False,
         "proxy_tier": "none",
         "rate_limit_delay": 2,
@@ -624,7 +624,14 @@ async def delete_config(
     result = await db.execute(select(func.count(Machine.id)).where(Machine.site_name == name))
     machine_count = result.scalar() or 0
     await db.execute(delete(Machine).where(Machine.site_name == name))
+
+    # Delete all scrape job history for this site
+    await db.execute(delete(ScrapeJob).where(ScrapeJob.site_name == name))
     await db.commit()
+
+    # Remove in-memory job entries for this site
+    for jid in [k for k, v in _running_jobs.items() if v.get("site_name") == name]:
+        _running_jobs.pop(jid, None)
 
     # Remove the config JSON file
     path.unlink()
