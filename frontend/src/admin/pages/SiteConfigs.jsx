@@ -109,7 +109,11 @@ export default function SiteConfigs() {
 
   const deleteMut = useMutation({
     mutationFn: deleteConfig,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['configs'] }); toast('Deleted', 'success') },
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ['configs'] })
+      qc.invalidateQueries({ queryKey: ['machines'] })
+      toast(`Deleted website + ${d.machines_removed ?? 0} machines`, 'success')
+    },
     onError: e => toast(e.response?.data?.detail || 'Delete failed', 'error'),
   })
 
@@ -229,7 +233,7 @@ export default function SiteConfigs() {
       <ConfirmModal
         isOpen={!!deleteTarget}
         title="Delete Website"
-        message={`Remove "${deleteTarget}" from web sources? This will not delete the machines already scraped from this site.`}
+        message={`Remove "${deleteTarget}" and permanently delete ALL its machines from the database? This cannot be undone.`}
         onConfirm={() => { deleteMut.mutate(deleteTarget); setDeleteTarget(null) }}
         onCancel={() => setDeleteTarget(null)}
       />

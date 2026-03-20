@@ -295,14 +295,22 @@ async def update_config(
 @router.delete("/configs/{name}")
 async def delete_config(
     name: str,
+    db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
     _, path = _load_config(name)
     if path is None:
         raise HTTPException(status_code=404, detail=f"Config '{name}' not found")
 
+    # Delete all machines belonging to this site from the database
+    result = await db.execute(select(func.count(Machine.id)).where(Machine.site_name == name))
+    machine_count = result.scalar() or 0
+    await db.execute(delete(Machine).where(Machine.site_name == name))
+    await db.commit()
+
+    # Remove the config JSON file
     path.unlink()
-    return {"deleted": name}
+    return {"deleted": name, "machines_removed": machine_count}
 
 
 @router.post("/configs/{name}/toggle")
