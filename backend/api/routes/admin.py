@@ -23,12 +23,17 @@ Endpoints:
 import asyncio
 import json
 import os
+import re
 import uuid
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Any
+from urllib.parse import urlparse, urljoin
 
 import bcrypt
+import httpx
+from bs4 import BeautifulSoup
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
@@ -51,6 +56,211 @@ SITE_CONFIGS_DIR = Path(__file__).parent.parent.parent / "site_configs"
 
 # In-memory running jobs registry  {job_id: {site_name, status, started_at, ...}}
 _running_jobs: dict[str, dict] = {}
+
+# ---------------------------------------------------------------------------
+# Utility classes to skip when building CSS selectors (layout/utility only)
+# ---------------------------------------------------------------------------
+_SKIP_CLASSES = {
+    "container", "wrapper", "inner", "outer", "content", "main", "body",
+    "row", "col", "grid", "flex", "block", "section", "page", "wrap",
+    "clearfix", "hidden", "visible", "active", "disabled", "open", "show",
+    "item", "element", "box", "card",  # too generic — kept unless best option
+}
+_PRICE_RE = re.compile(
+    r"[\d][\d\s.,]*\s*(?:EUR|USD|GBP|CHF|SEK|NOK|DKK|PLN|CZK|HUF|€|\$|£|Fr\.|kr)",
+    re.IGNORECASE,
+)
+_GEO_RE = re.compile(
+    r"\b(germany|deutschland|france|frankreich|spain|españa|italy|italia|"
+    r"poland|netherlands|austria|switzerland|belgium|czech|denmark|sweden|"
+    r"norway|finland|uk|usa|china|turkey|russia|ukraine|"
+    r"berlin|munich|münchen|paris|madrid|rome|amsterdam|vienna|wien|zurich|"
+    r"hamburg|cologne|frankfurt|stuttgart|düsseldorf)\b",
+    re.IGNORECASE,
+)
+
+
+def _best_class_selector(el) -> str:
+    """Return the best single-class CSS selector for an element, skipping utility classes."""
+    tag = el.name
+    classes = el.get("class", [])
+    # prefer a class that isn't a generic utility
+    for cls in classes:
+        if cls and cls not in _SKIP_CLASSES and not re.match(r"^(col|d-|m-|p-|mt-|mb-|pt-|pb-|g-|gap-|text-|bg-|border-|rounded|shadow|flex-|align-|justify-)", cls):
+            return f"{tag}.{cls}"
+    # fall back to first class if all are utility
+    if classes:
+        return f"{tag}.{classes[0]}"
+    return tag
+
+
+def _auto_detect_selectors(html: str, base_url: str) -> dict:
+    """
+    Analyse a machine listing page and return CSS selectors for:
+    listing_container, name, price, image, location, detail_link.
+
+    Algorithm:
+    1. Strip non-content elements (script, style, nav, footer).
+    2. Count (tag, classes) occurrences — repeated elements are candidates.
+    3. Score each candidate: +3 has <img>, +2 has <a href>, +2 price text, +1 geo text.
+    4. Pick highest-score selector with ≥ 3 occurrences.
+    5. Within a sample element find sub-selectors for each field.
+    """
+    soup = BeautifulSoup(html, "lxml")
+
+    # Strip non-content tags
+    for dead in soup(["script", "style", "nav", "footer", "header", "noscript", "aside"]):
+        dead.decompose()
+
+    # --- Step 1: count repeated (tag, first-meaningful-class) patterns ---
+    pattern_counter: Counter = Counter()
+    for el in soup.find_all(["div", "article", "li", "section", "tr"]):
+        classes = el.get("class", [])
+        if not classes:
+            continue
+        key = (el.name, classes[0])  # index by first class only for counting
+        pattern_counter[key] += 1
+
+    # --- Step 2: score candidates ---
+    scored: list[tuple[int, int, str]] = []  # (score, count, selector)
+
+    for (tag, first_cls), count in pattern_counter.most_common(60):
+        if count < 3:
+            continue
+
+        sel = f"{tag}.{first_cls}"
+        try:
+            elements = soup.select(sel)
+        except Exception:
+            continue
+
+        if not elements:
+            continue
+
+        # Skip elements that are clearly layout wrappers (too large)
+        sample_text_len = len(elements[0].get_text(strip=True))
+        if sample_text_len > 8000:
+            continue
+
+        score = 0
+        for el in elements[:6]:
+            text = el.get_text(strip=True)
+            if len(text) < 10:
+                continue
+            if el.find("img"):
+                score += 3
+            if el.find("a", href=True):
+                score += 2
+            if _PRICE_RE.search(text):
+                score += 2
+            if _GEO_RE.search(text):
+                score += 1
+            if 20 < len(text) < 3000:
+                score += 1
+
+        if score >= 5:
+            scored.append((score, count, sel))
+
+    if not scored:
+        return {}
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    container_sel = scored[0][2]
+
+    selectors: dict = {"listing_container": container_sel}
+
+    # --- Step 3: sub-selectors from a sample element ---
+    samples = soup.select(container_sel)
+    if not samples:
+        return selectors
+
+    sample = samples[0]
+
+    # Name: prefer heading tags, then strong, then prominent anchor text
+    for tag in ["h1", "h2", "h3", "h4", "strong"]:
+        node = sample.find(tag)
+        if node:
+            txt = node.get_text(strip=True)
+            if len(txt) > 5:
+                selectors["name"] = _best_class_selector(node) if node.get("class") else tag
+                break
+    if "name" not in selectors:
+        # fallback: longest anchor text
+        for a in sample.find_all("a", href=True):
+            if len(a.get_text(strip=True)) > 8:
+                selectors["name"] = _best_class_selector(a) if a.get("class") else "a"
+                break
+
+    # Price: first element whose text looks like a price
+    for el in sample.find_all(True):
+        txt = el.get_text(strip=True)
+        if _PRICE_RE.search(txt) and len(txt) < 80:
+            if not el.find_all(True):  # leaf node preferred
+                selectors["price"] = _best_class_selector(el) if el.get("class") else el.name
+                break
+            elif el.name not in ("div", "section", "article"):
+                selectors["price"] = _best_class_selector(el) if el.get("class") else el.name
+                break
+
+    # Image: prefer data-src / data-lazy-src attributes too
+    img = sample.find("img")
+    if img:
+        if img.get("class"):
+            selectors["image"] = _best_class_selector(img)
+        else:
+            # Check if parent has bg-image style
+            parent = img.parent
+            if parent and "background" in parent.get("style", ""):
+                selectors["image"] = _best_class_selector(parent) if parent.get("class") else f"{parent.name}"
+            else:
+                selectors["image"] = "img"
+
+    # Detail link: first <a> with a meaningful href (not # or javascript:)
+    for a in sample.find_all("a", href=True):
+        href = a.get("href", "")
+        if href and not href.startswith("#") and "javascript" not in href:
+            selectors["detail_link"] = _best_class_selector(a) if a.get("class") else "a"
+            break
+
+    # Location: first element matching geo keywords
+    for el in sample.find_all(True):
+        txt = el.get_text(strip=True)
+        if _GEO_RE.search(txt) and 3 < len(txt) < 120:
+            if not el.find("img") and not el.find("a"):
+                selectors["location"] = _best_class_selector(el) if el.get("class") else el.name
+                break
+
+    return selectors
+
+
+async def _fetch_html(url: str) -> tuple[str, str]:
+    """Fetch URL, return (html, detected_mode). mode='js' if site needs Playwright."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    async with httpx.AsyncClient(headers=headers, timeout=25, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+    html = resp.text
+    lower = html.lower()
+    # Detect if the page is JS-rendered (minimal real content)
+    soup_check = BeautifulSoup(html, "lxml")
+    visible_text = soup_check.get_text(strip=True)
+    js_signals = any(p in lower for p in ["__next_data__", "ng-app", "__nuxt", "reactroot", "vue"])
+    mode = "dynamic" if (js_signals or len(visible_text) < 500) else "static"
+    return html, mode
+
+
+def _name_from_url(url: str) -> str:
+    """Derive a safe config name from a URL, e.g. https://www.exapro.com/ → exapro"""
+    parsed = urlparse(url)
+    domain = parsed.netloc.replace("www.", "").split(":")[0]
+    name = domain.split(".")[0]
+    name = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
+    return name or "site"
 
 security = HTTPBearer(auto_error=False)
 
@@ -254,6 +464,114 @@ async def list_configs(
         cfg["last_scraped"] = last.isoformat() if last else None
 
     return {"configs": configs}
+
+
+@router.post("/configs/auto-detect")
+async def auto_detect_config(
+    body: dict,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(_get_current_admin),
+):
+    """
+    Auto-detect CSS selectors for a machine listing site and immediately start scraping.
+    Body: { url: str, name: str (optional) }
+    """
+    url = (body.get("url") or body.get("start_url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="'url' is required")
+
+    # Auto-generate name from domain if not provided
+    name = (body.get("name") or "").strip()
+    if not name:
+        name = _name_from_url(url)
+
+    # Make name unique — append counter if already exists
+    base_name = name
+    counter = 1
+    while (SITE_CONFIGS_DIR / f"{name}.json").exists():
+        name = f"{base_name}-{counter}"
+        counter += 1
+
+    # Fetch the page
+    try:
+        html, mode = await _fetch_html(url)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=400, detail=f"HTTP {e.response.status_code} fetching URL")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not fetch URL: {e}")
+
+    # Auto-detect selectors
+    selectors = _auto_detect_selectors(html, url)
+
+    if not selectors.get("listing_container"):
+        # Site may be JS-rendered — still create config so user can run with dynamic mode
+        mode = "dynamic"
+        selectors = {
+            "listing_container": "",
+            "name": "h2, h3",
+            "price": "",
+            "image": "img",
+            "location": "",
+            "detail_link": "a",
+        }
+
+    # Count how many items were detected on page 1
+    detected_count = 0
+    if selectors.get("listing_container"):
+        soup_tmp = BeautifulSoup(html, "lxml")
+        detected_count = len(soup_tmp.select(selectors["listing_container"]))
+
+    # Parse base_url from URL
+    parsed_url = urlparse(url)
+    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+    config = {
+        "name": name,
+        "display_name": name.replace("-", " ").replace("_", " ").title(),
+        "start_url": url,
+        "base_url": base_url,
+        "enabled": True,
+        "mode": mode,
+        "pagination": True,
+        "pagination_type": "page_param",
+        "pagination_param": "page",
+        "max_pages": 20,
+        "detail_page": False,
+        "proxy_tier": "none",
+        "rate_limit_delay": 2,
+        "language": "en",
+        "selectors": {
+            "listing_container": selectors.get("listing_container", ""),
+            "name": selectors.get("name", ""),
+            "price": selectors.get("price", ""),
+            "image": selectors.get("image", "img"),
+            "location": selectors.get("location", ""),
+            "detail_link": selectors.get("detail_link", "a"),
+            "next_page": "",
+        },
+    }
+
+    # Save config JSON
+    SITE_CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+    config_path = SITE_CONFIGS_DIR / f"{name}.json"
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+    # Start scrape immediately in background
+    job_id = str(uuid.uuid4())
+    db_url = os.getenv("DATABASE_URL", "")
+    background_tasks.add_task(_run_scrape_background, name, config, job_id, db_url)
+
+    return {
+        "created": name,
+        "display_name": config["display_name"],
+        "job_id": job_id,
+        "detected_count": detected_count,
+        "mode": mode,
+        "selectors": config["selectors"],
+        "needs_js": mode == "dynamic",
+    }
 
 
 @router.post("/configs")
