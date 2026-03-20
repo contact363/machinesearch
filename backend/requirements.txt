@@ -1,3 +1,5 @@
+-c constraints.txt
+
 # ── Web framework ────────────────────────────────────────────────────────────
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
@@ -32,5 +34,3 @@ python-dotenv>=1.0.0
 pytest>=8.2.0
 pytest-asyncio>=0.23.0
 httpx>=0.27.0   # also used as async test client
-
-# TODO: pin exact versions before first production deployment (pip-compile)
