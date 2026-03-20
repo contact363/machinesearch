@@ -38,13 +38,15 @@ export default function ScraperJobs() {
   const qc = useQueryClient()
   const toast = useToast()
 
-  const { data: statusData, refetch: refetchStatus } = useQuery({
+  const { data: statusData, refetch: refetchStatus, isFetching: fetchingStatus } = useQuery({
     queryKey: ['jobStatus'],
     queryFn: getJobStatus,
-    refetchInterval: 10_000,
+    refetchInterval: 8_000,
   })
 
-  const { data: histData, isLoading, refetch: refetchHist } = useQuery({
+  const hasRunning = (statusData?.jobs || []).some(j => j.status === 'running')
+
+  const { data: histData, isLoading, isFetching: fetchingHist, refetch: refetchHist } = useQuery({
     queryKey: ['jobHistory', page, siteFilter, statusFilter],
     queryFn: () => getJobHistory({
       page,
@@ -52,6 +54,7 @@ export default function ScraperJobs() {
       site: siteFilter || undefined,
       status: statusFilter || undefined,
     }),
+    refetchInterval: hasRunning ? 5_000 : false,
   })
 
   const startAllMut = useMutation({
@@ -63,6 +66,7 @@ export default function ScraperJobs() {
     onError: e => toast(e.response?.data?.detail || 'Start failed', 'error'),
   })
 
+  const isRefreshing = fetchingStatus || fetchingHist
   const handleRefresh = () => { refetchStatus(); refetchHist() }
 
   const allJobs = statusData?.jobs || []
@@ -88,8 +92,13 @@ export default function ScraperJobs() {
             )}
             <button
               onClick={handleRefresh}
-              className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 hover:bg-gray-50 transition-colors">
-              ↻ Refresh
+              disabled={isRefreshing}
+              className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-60 transition-colors">
+              {isRefreshing
+                ? <span className="w-3.5 h-3.5 border-2 border-gray-400 border-t-gray-700 rounded-full animate-spin" />
+                : <span>↻</span>
+              }
+              Refresh
             </button>
             <button
               onClick={() => startAllMut.mutate()}
@@ -174,11 +183,11 @@ export default function ScraperJobs() {
                       <td className="px-4 py-3 text-xs text-gray-600 whitespace-nowrap">
                         {durationStr(job.started_at, job.finished_at)}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 max-w-[200px]">
                         {job.error_message && (
                           <span title={job.error_message}
-                            className="inline-block px-2 py-0.5 bg-red-50 text-red-600 text-xs rounded cursor-help max-w-[120px] truncate">
-                            {job.error_message.slice(0, 30)}{job.error_message.length > 30 ? '…' : ''}
+                            className="inline-block px-2 py-0.5 bg-red-50 text-red-600 text-xs rounded cursor-help break-all line-clamp-2">
+                            {job.error_message.slice(0, 80)}{job.error_message.length > 80 ? '…' : ''}
                           </span>
                         )}
                       </td>

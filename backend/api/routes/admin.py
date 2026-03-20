@@ -678,12 +678,12 @@ async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_u
 
     try:
         engine = AdaptiveEngine()
-        cfg = {**config, "max_pages": config.get("max_pages", 1), "detail_page": False}
+        cfg = {**config, "max_pages": config.get("max_pages", 50), "detail_page": False}
         items = await engine.run(cfg)
 
         new_count = 0
         async with AsyncSessionLocal() as session:
-            # Record ScrapeJob
+            # Record ScrapeJob first
             job = ScrapeJob(
                 id=uuid.UUID(job_id),
                 site_name=site_name,
@@ -691,35 +691,46 @@ async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_u
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
                 items_found=len(items),
-                items_new=new_count,
-                pages_scraped=1,
+                items_new=0,
+                pages_scraped=cfg.get("max_pages", 50),
             )
             session.add(job)
+            await session.flush()  # persist job row before machine inserts
 
-            # Upsert machines
+            # Deduplicate within this batch first (same source_url appearing twice)
+            seen_urls: set[str] = set()
+            deduped_items = []
             for item in items:
-                source_url = item.get("source_url", "").strip()
+                url = (item.get("source_url") or "").strip()
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    deduped_items.append(item)
+
+            # Use INSERT ... ON CONFLICT DO NOTHING to avoid unique violations
+            for item in deduped_items:
+                source_url = (item.get("source_url") or "").strip()
                 if not source_url:
                     continue
-                existing = await session.scalar(
-                    select(Machine.id).where(Machine.source_url == source_url)
-                )
-                if not existing:
-                    m = Machine(
-                        id=uuid.uuid4(),
-                        name=(item.get("name") or "")[:500],
-                        brand=item.get("brand") or None,
-                        price=item.get("price") or None,
-                        currency=item.get("currency") or "USD",
-                        location=item.get("location") or None,
-                        image_url=item.get("image_url") or None,
-                        description=item.get("description") or None,
-                        specs=item.get("specs") or None,
-                        source_url=source_url,
-                        site_name=site_name,
-                        language=item.get("language", "en"),
-                    )
-                    session.add(m)
+                stmt = pg_insert(Machine).values(
+                    id=uuid.uuid4(),
+                    name=(item.get("name") or "Unknown")[:500],
+                    brand=(item.get("brand") or None),
+                    price=(item.get("price") or None),
+                    currency=(item.get("currency") or "USD"),
+                    location=(item.get("location") or None),
+                    image_url=(item.get("image_url") or None),
+                    description=(item.get("description") or None),
+                    specs=(item.get("specs") or None),
+                    source_url=source_url,
+                    site_name=site_name,
+                    language=(item.get("language") or "en"),
+                    view_count=0,
+                    click_count=0,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                ).on_conflict_do_nothing(index_elements=["source_url"])
+                result = await session.execute(stmt)
+                if result.rowcount > 0:
                     new_count += 1
 
             job.items_new = new_count
