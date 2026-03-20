@@ -904,6 +904,24 @@ async def list_machines(
     }
 
 
+@router.delete("/machines/clear-all")
+async def clear_all_machines(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(_get_current_admin),
+):
+    """Delete every machine and every scrape job from the database."""
+    machine_result = await db.execute(select(func.count(Machine.id)))
+    machine_count = machine_result.scalar() or 0
+
+    await db.execute(delete(Machine))
+    await db.execute(delete(ScrapeJob))
+    await db.commit()
+
+    _running_jobs.clear()
+
+    return {"cleared": True, "machines_removed": machine_count}
+
+
 @router.delete("/machines/bulk")
 async def delete_machines_bulk(
     site_name: str = Query(...),

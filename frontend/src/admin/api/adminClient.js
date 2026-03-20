@@ -67,6 +67,9 @@ export const deleteMachine = id =>
 export const deleteBySite = site_name =>
   api.delete('/admin/machines/bulk', { params: { site_name } }).then(r => r.data)
 
+export const clearAllMachines = () =>
+  api.delete('/admin/machines/clear-all').then(r => r.data)
+
 export const getClickAnalytics = params =>
   api.get('/admin/analytics/clicks', { params }).then(r => r.data)
 

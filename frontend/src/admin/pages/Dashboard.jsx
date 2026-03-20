@@ -1,12 +1,28 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
-import { getOverview } from '../api/adminClient'
+import { getOverview, clearAllMachines } from '../api/adminClient'
 import StatCard from '../components/StatCard'
 import AdminLayout from '../components/AdminLayout'
+import ConfirmModal from '../components/ConfirmModal'
+import { useToast } from '../components/Toast'
 
 export default function Dashboard() {
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
+  const qc = useQueryClient()
+  const toast = useToast()
+
+  const clearMut = useMutation({
+    mutationFn: clearAllMachines,
+    onSuccess: (d) => {
+      qc.invalidateQueries()
+      toast(`Cleared ${d.machines_removed.toLocaleString()} machines from database`, 'success')
+    },
+    onError: e => toast(e.response?.data?.detail || 'Clear failed', 'error'),
+  })
+
   const { data, isLoading, error } = useQuery({
     queryKey: ['overview'],
     queryFn: getOverview,
@@ -34,6 +50,19 @@ export default function Dashboard() {
   return (
     <AdminLayout>
       <div className="space-y-6">
+        {/* Danger zone */}
+        <div className="flex justify-end">
+          <button
+            onClick={() => setShowClearConfirm(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-lg transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            Clear All Data
+          </button>
+        </div>
+
         {/* Stat cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
           <StatCard title="Total Machines"  value={d.total_machines?.toLocaleString()} icon="🗄" color="blue" />
@@ -119,6 +148,14 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      <ConfirmModal
+        isOpen={showClearConfirm}
+        title="Clear All Data"
+        message="This will permanently delete ALL machines and ALL scrape job history from the database. This cannot be undone. Are you sure?"
+        onConfirm={() => { clearMut.mutate(); setShowClearConfirm(false) }}
+        onCancel={() => setShowClearConfirm(false)}
+      />
     </AdminLayout>
   )
 }
