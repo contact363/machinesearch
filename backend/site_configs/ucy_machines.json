@@ -1,0 +1,26 @@
+{
+  "name": "ucy_machines",
+  "display_name": "UCY Machines",
+  "start_url": "https://www.ucymachines.com/en/machine-tools",
+  "language": "en",
+  "pagination": true,
+  "pagination_type": "page_param",
+  "pagination_param": "page",
+  "max_pages": 45,
+  "detail_page": false,
+  "mode": "static",
+  "proxy_tier": "none",
+  "rate_limit_delay": 2,
+  "enabled": true,
+  "base_url": "https://www.ucymachines.com",
+  "selectors": {
+    "listing_container": "div.listing__wrapper",
+    "name": "h4.listing__title a span, h4.listing__title a",
+    "price": "span.primary-price, div.listing-price-data span",
+    "image": "img.listing__image",
+    "location": "span.listing-info__location, div.listing__location",
+    "detail_link": "a[data-role='show-listing']",
+    "next_page": "a[rel=next], .pagination .next a"
+  },
+  "fields": ["name","price","brand","image","location","description","specs"]
+}

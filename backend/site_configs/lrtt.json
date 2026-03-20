@@ -1,0 +1,25 @@
+{
+  "name": "lrtt",
+  "display_name": "LRTT Maschinenmarkt",
+  "start_url": "https://www.lrtt.de/maschinenmarkt.php",
+  "language": "de",
+  "pagination": false,
+  "pagination_type": "none",
+  "max_pages": 1,
+  "detail_page": false,
+  "mode": "static",
+  "proxy_tier": "none",
+  "rate_limit_delay": 2,
+  "enabled": true,
+  "base_url": "https://www.lrtt.de",
+  "selectors": {
+    "listing_container": "div.artikel_self",
+    "name": "h2.titel a, h2 a.titel",
+    "price": "",
+    "image": "img.justifyleft",
+    "location": "",
+    "detail_link": "h2.titel a, a.titel",
+    "next_page": ""
+  },
+  "fields": ["name","price","brand","image","location","description","specs"]
+}

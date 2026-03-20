@@ -1,0 +1,26 @@
+{
+  "name": "fm_machines",
+  "display_name": "FM-Machines",
+  "start_url": "https://www.fm-machines.com/angebote",
+  "language": "de",
+  "pagination": true,
+  "pagination_type": "page_param",
+  "pagination_param": "page",
+  "max_pages": 20,
+  "detail_page": false,
+  "mode": "static",
+  "proxy_tier": "none",
+  "rate_limit_delay": 2,
+  "enabled": true,
+  "base_url": "https://www.fm-machines.com",
+  "selectors": {
+    "listing_container": "div.listing__wrapper",
+    "name": "h4.listing-info__title a, h4.listing__title a span",
+    "price": "span.primary-price, div.listing-price-data span",
+    "image": "img.listing-img",
+    "location": "span.listing-info__location",
+    "detail_link": "a[data-role='show-listing']",
+    "next_page": "a[rel=next], .pagination .next a"
+  },
+  "fields": ["name","price","brand","image","location","description","specs"]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "vib_kg",
+  "display_name": "VIB-KG",
+  "start_url": "https://vib-kg.com/usedmachines",
+  "language": "de",
+  "pagination": false,
+  "pagination_type": "none",
+  "pagination_param": "page",
+  "max_pages": 1,
+  "detail_page": false,
+  "mode": "static",
+  "proxy_tier": "none",
+  "rate_limit_delay": 2,
+  "enabled": true,
+  "base_url": "https://vib-kg.com",
+  "selectors": {
+    "listing_container": "li.list-group-item.p-0",
+    "name": "div.machine-index-details h2, div.machine-index-details h3, div.machine-index-details .machine-title",
+    "price": "div.machine-index-details .price, div.machine-index-desc .price",
+    "image": "div.machine-index-slider-img",
+    "location": "div.machine-index-details .location, li.machine-attribute",
+    "detail_link": "div.carousel-item.active a",
+    "next_page": ""
+  },
+  "fields": ["name", "price", "brand", "image", "location", "description", "specs"],
+  "_note": "All inventory on single page — no server-side pagination. ~128 machines in one request."
+}

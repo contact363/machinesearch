@@ -1,0 +1,26 @@
+{
+  "name": "exapro",
+  "display_name": "Exapro",
+  "start_url": "https://www.exapro.com/hot-deals/metal-machine-tools-c1/",
+  "language": "en",
+  "pagination": true,
+  "pagination_type": "page_param",
+  "pagination_param": "page",
+  "max_pages": 11,
+  "detail_page": false,
+  "mode": "static",
+  "proxy_tier": "none",
+  "rate_limit_delay": 2,
+  "enabled": true,
+  "base_url": "https://www.exapro.com",
+  "selectors": {
+    "listing_container": "div.ps-product",
+    "name": "h2.mb-0 a.ps-product__title__list, h2 a",
+    "price": "div.ps-product__shopping p.price strong, div.ps-product__shopping .price",
+    "image": "div.ps-product__thumbnail img",
+    "location": "p.ps-product__vendor span.badge-attribute",
+    "detail_link": "div.ps-product__thumbnail a",
+    "next_page": "a[rel=next], .pagination a[href*='page=']"
+  },
+  "fields": ["name", "price", "brand", "image", "location", "description", "specs"]
+}
