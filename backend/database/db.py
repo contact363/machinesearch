@@ -116,9 +116,12 @@ _EXTRA_DDL = [
 async def init_db() -> None:
     """
     Create all ORM-mapped tables (if they don't exist) and apply extra DDL.
+    Then seed any production site configs that are missing from the DB.
 
-    Safe to call on every startup — uses CREATE TABLE IF NOT EXISTS and
-    CREATE INDEX IF NOT EXISTS so it is idempotent.
+    Safe to call on every startup — all operations are idempotent:
+      - CREATE TABLE IF NOT EXISTS
+      - CREATE INDEX IF NOT EXISTS
+      - INSERT site configs only when the row is absent
 
     NOTE: for production schema migrations use Alembic instead of this
     function.  Keep this for development / test bootstrapping only.
@@ -135,3 +138,9 @@ async def init_db() -> None:
             await conn.execute(text(ddl))
 
     logger.info("Database initialisation complete.")
+
+    # Restore any production configs missing from the DB (e.g. after a DB wipe).
+    # Never overwrites configs that already exist — admin edits are preserved.
+    from database.seed_configs import seed_site_configs
+    async with AsyncSessionLocal() as session:
+        await seed_site_configs(session)
