@@ -13,9 +13,35 @@ import { useToast } from '../components/Toast'
 function DetectionCard({ result, onConfirm, onAddAnyway, onAddWithProxy, onDismiss }) {
   if (!result) return null
 
-  const isReady = result.scrapable_now
+  const alreadyExists = result.already_exists
+  const isReady = result.scrapable_now && !alreadyExists
   const isBlocked = result.framework === 'blocked'
-  const isDynamic = !isReady && !isBlocked
+  const isDynamic = !result.scrapable_now && !isBlocked
+
+  if (alreadyExists) {
+    return (
+      <div className="rounded-xl border p-4 text-sm bg-orange-50 border-orange-200">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-lg text-orange-500">⚠</span>
+              <span className="font-semibold text-orange-800">Site already exists</span>
+            </div>
+            <p className="text-xs text-orange-700 mb-3">
+              <strong>{result.existing_name}</strong> is already in your Sites list.
+              Go to the Sites page to edit its config or trigger a rescrape.
+            </p>
+            <button
+              onClick={onDismiss}
+              className="px-3 py-1.5 text-gray-500 hover:text-gray-700 text-xs rounded-lg font-medium"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={`rounded-xl border p-4 text-sm ${

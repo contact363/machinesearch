@@ -544,6 +544,7 @@ async def list_configs(
 @router.post("/configs/detect")
 async def detect_site(
     body: dict,
+    db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
     """
@@ -614,6 +615,24 @@ async def detect_site(
 
     suggested = _make_suggested_config(url, framework, "static", selectors)
 
+    # Check if this site already exists in DB (by name or base domain)
+    already_exists = False
+    existing_name = None
+    candidate_name = _name_from_url(url)
+    parsed_detect = urlparse(url)
+    all_rows = (await db.execute(select(SiteConfig))).scalars().all()
+    for row in all_rows:
+        if row.name == candidate_name:
+            already_exists = True
+            existing_name = row.name
+            break
+        cfg = row.config_json or {}
+        row_netloc = urlparse(cfg.get("base_url", "") or cfg.get("start_url", "")).netloc
+        if row_netloc and row_netloc == parsed_detect.netloc:
+            already_exists = True
+            existing_name = row.name
+            break
+
     return {
         "url": url,
         "framework": framework,
@@ -623,6 +642,8 @@ async def detect_site(
         "detected_count": detected_count,
         "confidence": confidence,
         "suggested_config": suggested,
+        "already_exists": already_exists,
+        "existing_name": existing_name,
     }
 
 
@@ -725,12 +746,24 @@ async def auto_detect_config(
     if not name:
         name = _name_from_url(url)
 
-    # Make name unique — append counter if already exists in DB
-    base_name = name
-    counter = 1
-    while await db.scalar(select(SiteConfig).where(SiteConfig.name == name)):
-        name = f"{base_name}-{counter}"
-        counter += 1
+    # Reject if a site with this name already exists
+    if await db.scalar(select(SiteConfig).where(SiteConfig.name == name)):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Site '{name}' already exists. Edit it from the Sites page instead.",
+        )
+
+    # Also reject if any existing config covers the same domain
+    parsed_new = urlparse(url)
+    all_existing = (await db.execute(select(SiteConfig))).scalars().all()
+    for row in all_existing:
+        cfg = row.config_json or {}
+        row_netloc = urlparse(cfg.get("base_url", "") or cfg.get("start_url", "")).netloc
+        if row_netloc and row_netloc == parsed_new.netloc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Site '{row.name}' already covers '{parsed_new.netloc}'. Edit it from the Sites page instead.",
+            )
 
     # Fetch the page
     try:
