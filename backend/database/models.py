@@ -56,6 +56,7 @@ class Machine(Base):
     source_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     site_name: Mapped[str] = mapped_column(String(100), nullable=False)
     language: Mapped[str] = mapped_column(String(10), nullable=False, default="en")
+    is_featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     view_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     click_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(

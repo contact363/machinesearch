@@ -1288,6 +1288,7 @@ async def list_machines(
             "source_url": m.source_url,
             "site_name": m.site_name,
             "language": m.language,
+            "is_featured": getattr(m, "is_featured", False),
             "view_count": m.view_count,
             "click_count": m.click_count,
             "created_at": m.created_at.isoformat() if m.created_at else None,
@@ -1299,6 +1300,20 @@ async def list_machines(
         "total": total or 0,
         "machines": [_m(m) for m in machines],
     }
+
+
+@router.patch("/machines/{machine_id}/toggle-featured")
+async def toggle_featured(
+    machine_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(_get_current_admin),
+):
+    m = await db.scalar(select(Machine).where(Machine.id == machine_id))
+    if not m:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    m.is_featured = not getattr(m, "is_featured", False)
+    await db.commit()
+    return {"id": machine_id, "is_featured": m.is_featured}
 
 
 @router.delete("/machines/clear-all")
