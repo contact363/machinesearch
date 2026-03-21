@@ -277,14 +277,23 @@ class AdaptiveEngine:
                 if img_sel:
                     img_node = el.select_one(img_sel)
                     if img_node:
-                        # 1. Standard src / data-src / data-lazy-src / data-original attributes
-                        image_url = (
-                            img_node.get("src")
-                            or img_node.get("data-src")
+                        # 1. Prefer lazy-load attributes over src (src may be a placeholder)
+                        data_url = (
+                            img_node.get("data-src")
                             or img_node.get("data-lazy-src")
                             or img_node.get("data-original")
                             or ""
                         )
+                        src_url = img_node.get("src", "")
+                        # Skip src if it looks like a loading placeholder
+                        _placeholder = (
+                            "loading_image" in src_url
+                            or src_url.endswith(".svg")
+                            or "placeholder" in src_url
+                            or "lazy" in src_url
+                            or src_url.startswith("data:image")
+                        )
+                        image_url = data_url or (src_url if not _placeholder else "")
                         # 2. CSS background: url('...') in style attribute
                         if not image_url:
                             style = img_node.get("style", "")
@@ -924,12 +933,47 @@ class AdaptiveEngine:
         offset = 0
 
         async with httpx.AsyncClient(headers=api_headers, timeout=60, follow_redirects=True) as client:
+            # Pre-fetch lookup tables to build correct machine URLs
+            brands: dict[str, str] = {}       # id -> slug
+            categories: dict[str, str] = {}   # id -> slug
+            machine_types: dict[str, str] = {}  # id -> slug
+            for table, store in [
+                ("brands", brands),
+                ("categories", categories),
+                ("machine_types", machine_types),
+            ]:
+                try:
+                    r = await client.get(f"{supabase_url}/rest/v1/{table}?select=id,slug&limit=1000")
+                    if r.status_code == 200:
+                        for row in r.json():
+                            store[row["id"]] = row.get("slug", "")
+                except Exception as exc:
+                    logger.warning("[%s] Could not fetch %s lookup: %s", site_name, table, exc)
+
+            def _build_zatpat_url(rec: dict) -> str:
+                """Build the canonical zatpatmachines.com URL for a machine record."""
+                src = rec.get("source_url")
+                if src:
+                    return src
+                cat_slug = categories.get(rec.get("category_id", ""), "")
+                type_slug = machine_types.get(rec.get("type_id", ""), "")
+                brand_slug = brands.get(rec.get("brand_id", ""), "")
+                model_name = rec.get("model_name", "")
+                model_slug = re.sub(r"[^a-z0-9]+", "-", model_name.lower()).strip("-") + "_1"
+                year = rec.get("year", "")
+                id_prefix = rec.get("id_prefix") or (rec.get("id", "")[:8])
+                if cat_slug and type_slug and brand_slug and model_slug and year and id_prefix:
+                    return f"{base_site_url}/{cat_slug}/{type_slug}/{brand_slug}/{model_slug}/{year}/{id_prefix}"
+                if id_prefix:
+                    return f"{base_site_url}/machines/{id_prefix}"
+                return f"{base_site_url}/machines"
+
             while True:
                 url = (
                     f"{supabase_url}/rest/v1/machines_public"
-                    f"?select=id,model_name,brand_id,price,currency,main_image_url,"
-                    f"model_name,condition,location_country,location_city,"
-                    f"description,source_url,sku_number,year,controller,status"
+                    f"?select=id,id_prefix,model_name,brand_id,category_id,type_id,"
+                    f"price,currency,main_image_url,condition,location_country,"
+                    f"location_city,description,source_url,sku_number,year,controller,status"
                     f"&limit={page_size}&offset={offset}"
                 )
                 try:
@@ -941,10 +985,9 @@ class AdaptiveEngine:
                     logger.info("[%s] Fetched %d records at offset %d", site_name, len(records), offset)
 
                     for rec in records:
-                        rec_id = rec.get("id", "")
-                        sku = rec.get("sku_number", "") or rec.get("old_sku", "") or rec_id
+                        sku = rec.get("sku_number", "") or rec.get("id", "")
                         machine_name = rec.get("model_name", "") or sku
-                        src_url = rec.get("source_url") or f"{base_site_url}/machines/{rec_id}"
+                        src_url = _build_zatpat_url(rec)
 
                         loc_parts = []
                         if rec.get("location_city"):
