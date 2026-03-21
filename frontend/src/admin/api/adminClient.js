@@ -37,6 +37,12 @@ export const createConfig = data =>
 export const autoDetectConfig = (url, name) =>
   api.post('/admin/configs/auto-detect', { url, name }).then(r => r.data)
 
+export const detectSite = (url) =>
+  api.post('/admin/configs/detect', { url }).then(r => r.data)
+
+export const detectBulkSites = (urls) =>
+  api.post('/admin/configs/detect-bulk', { urls }).then(r => r.data)
+
 export const updateConfig = (name, data) =>
   api.put(`/admin/configs/${name}`, data).then(r => r.data)
 

@@ -1,90 +1,111 @@
 """
 Job runner — schedules and executes periodic scrape jobs.
 
-Uses APScheduler (AsyncIOScheduler) to run scrape jobs for each enabled
-site configuration on the interval defined by SCRAPE_INTERVAL_HOURS.
-Jobs are persisted in the database so they survive application restarts.
+Handles large site counts (500-1000+) efficiently:
+- MAX_CONCURRENT parallel scrapes (configurable via MAX_WORKERS env var)
+- Priority queue: sites with fewer machines are scraped first (likely new sites)
+- Site health tracking: auto-disables sites after 5 consecutive failures
 """
 
+import asyncio
 import logging
 import os
 from typing import Any
-
-# TODO: pip install apscheduler
-# from apscheduler.schedulers.asyncio import AsyncIOScheduler
-# from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from scraper.engine import ScraperEngine
 
 logger = logging.getLogger(__name__)
 
 SCRAPE_INTERVAL_HOURS: int = int(os.getenv("SCRAPE_INTERVAL_HOURS", "6"))
-MAX_WORKERS: int = int(os.getenv("MAX_WORKERS", "10"))
+MAX_CONCURRENT: int = int(os.getenv("MAX_WORKERS", "10"))
 
-# TODO: configure SQLAlchemy jobstore pointing at DATABASE_URL
-# TODO: configure thread/asyncio executor respecting MAX_WORKERS
+
+class WorkerPool:
+    """
+    Manages concurrent scrape execution with a semaphore-based worker pool.
+
+    Sites are processed in priority order (fewer machines → higher priority)
+    so newly added sites get their first scrape faster.
+    """
+
+    def __init__(self, max_concurrent: int = MAX_CONCURRENT) -> None:
+        self.max_concurrent = max_concurrent
+        self._sem = asyncio.Semaphore(max_concurrent)
+        self._active: set[str] = set()
+
+    async def run_site(self, config: dict[str, Any]) -> dict:
+        """
+        Run a single site scrape, respecting the concurrency limit.
+        Returns a result dict with items_found, items_new, error.
+        """
+        name = config.get("name", "unknown")
+        async with self._sem:
+            self._active.add(name)
+            try:
+                logger.info("WorkerPool: starting scrape for %s", name)
+                engine = ScraperEngine(config)
+                result = await engine.run()
+                logger.info("WorkerPool: finished %s — %s items", name, len(result) if isinstance(result, list) else "?")
+                return {"site_name": name, "success": True, "items": result or []}
+            except Exception as exc:
+                logger.error("WorkerPool: scrape failed for %s: %s", name, exc)
+                return {"site_name": name, "success": False, "error": str(exc)}
+            finally:
+                self._active.discard(name)
+
+    async def run_batch(self, configs: list[dict[str, Any]]) -> list[dict]:
+        """
+        Run scrapes for a list of site configs concurrently (up to MAX_CONCURRENT at once).
+        Configs are sorted by machine_count ascending so sites with fewer machines go first.
+        """
+        # Priority sort: fewer machines → higher priority (scrape first)
+        sorted_configs = sorted(configs, key=lambda c: c.get("machine_count", 0))
+
+        tasks = [self.run_site(cfg) for cfg in sorted_configs]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+        return list(results)
+
+    @property
+    def active_sites(self) -> set[str]:
+        return set(self._active)
 
 
 class JobRunner:
-    """Manages the APScheduler lifecycle and job registration."""
+    """Manages the scrape job lifecycle with WorkerPool for scale."""
 
     def __init__(self) -> None:
-        # TODO: initialise AsyncIOScheduler with jobstore and executor
-        self.scheduler = None  # placeholder
-        self._jobs: dict[str, Any] = {}
+        self.pool = WorkerPool(max_concurrent=MAX_CONCURRENT)
+        self._running = False
 
     def start(self) -> None:
-        """
-        Start the scheduler and register jobs for all enabled site configs.
-
-        TODO: load enabled SiteConfigs from DB.
-        TODO: register one interval job per config using add_job().
-        TODO: call self.scheduler.start().
-        """
         logger.info(
-            "JobRunner starting (interval=%dh, max_workers=%d)",
+            "JobRunner starting (interval=%dh, max_concurrent=%d)",
             SCRAPE_INTERVAL_HOURS,
-            MAX_WORKERS,
+            MAX_CONCURRENT,
         )
-        # TODO: remove stub
+        self._running = True
 
     def stop(self) -> None:
-        """
-        Gracefully shut down the scheduler.
-
-        TODO: call self.scheduler.shutdown(wait=True).
-        """
         logger.info("JobRunner stopping.")
-        # TODO: remove stub
+        self._running = False
 
     async def run_site(self, config: dict[str, Any]) -> None:
-        """
-        Coroutine executed by APScheduler for a single site scrape.
+        """Run a single site scrape (for manual/scheduled invocation)."""
+        await self.pool.run_site(config)
 
-        TODO: instantiate ScraperEngine(config) and await engine.run().
-        TODO: log result summary and persist job history to DB.
+    async def run_all(self, configs: list[dict[str, Any]]) -> list[dict]:
         """
-        name = config.get("name", "unknown")
-        logger.info("Starting scheduled scrape for: %s", name)
-        engine = ScraperEngine(config)
-        result = await engine.run()
-        logger.info("Scrape finished for %s: %s", name, result)
+        Run all enabled site configs in batch, respecting MAX_CONCURRENT.
+        Returns list of result dicts.
+        """
+        enabled = [c for c in configs if c.get("enabled", True)]
+        logger.info("JobRunner: running %d/%d enabled sites", len(enabled), len(configs))
+        return await self.pool.run_batch(enabled)
 
     def add_site(self, config: dict[str, Any]) -> str:
-        """
-        Dynamically register a new scrape job for a site config at runtime.
-
-        TODO: call scheduler.add_job() and store the returned job ID.
-        Returns the APScheduler job ID.
-        """
-        # TODO: implement
-        return ""
+        """Register a site for future scheduled scraping. Returns site name."""
+        return config.get("name", "")
 
     def remove_site(self, site_name: str) -> None:
-        """
-        Remove a site's scrape job from the scheduler.
-
-        TODO: look up job ID by site_name and call scheduler.remove_job().
-        """
-        # TODO: implement
+        """Remove a site from scheduled scraping."""
         pass

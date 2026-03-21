@@ -5,6 +5,9 @@ Endpoints:
   POST   /admin/auth/login
   GET    /admin/analytics/overview
   GET    /admin/configs
+  POST   /admin/configs/detect
+  POST   /admin/configs/detect-bulk
+  POST   /admin/configs/auto-detect
   POST   /admin/configs
   PUT    /admin/configs/{name}
   DELETE /admin/configs/{name}
@@ -21,15 +24,13 @@ Endpoints:
 """
 
 import asyncio
-import json
 import os
 import re
 import uuid
 from collections import Counter
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 from typing import Optional, Any
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 
 import bcrypt
 import httpx
@@ -42,7 +43,7 @@ from sqlalchemy import select, func, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.db import get_db
-from database.models import AdminUser, ClickEvent, Machine, ScrapeJob, SearchEvent
+from database.models import AdminUser, ClickEvent, Machine, ScrapeJob, SearchEvent, SiteConfig
 
 router = APIRouter()
 
@@ -52,7 +53,6 @@ router = APIRouter()
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
-SITE_CONFIGS_DIR = Path(__file__).parent.parent.parent / "site_configs"
 
 # In-memory running jobs registry  {job_id: {site_name, status, started_at, ...}}
 _running_jobs: dict[str, dict] = {}
@@ -233,8 +233,14 @@ def _auto_detect_selectors(html: str, base_url: str) -> dict:
     return selectors
 
 
-async def _fetch_html(url: str) -> tuple[str, str]:
-    """Fetch URL, return (html, detected_mode). mode='js' if site needs Playwright."""
+async def _fetch_html_and_detect(url: str) -> tuple[str, str, str, bool]:
+    """
+    Fetch URL and detect framework.
+    Returns (html, framework, mode, is_blocked).
+      framework: nextjs | react_spa | vue | wordpress | static | blocked
+      mode: static | dynamic
+      is_blocked: True if site blocks scrapers (403/429/Cloudflare)
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -243,14 +249,41 @@ async def _fetch_html(url: str) -> tuple[str, str]:
     }
     async with httpx.AsyncClient(headers=headers, timeout=25, follow_redirects=True) as client:
         resp = await client.get(url)
-        resp.raise_for_status()
+
+    if resp.status_code in (403, 429):
+        return "", "blocked", "static", True
+
+    resp.raise_for_status()
     html = resp.text
     lower = html.lower()
-    # Detect if the page is JS-rendered (minimal real content)
-    soup_check = BeautifulSoup(html, "lxml")
-    visible_text = soup_check.get_text(strip=True)
-    js_signals = any(p in lower for p in ["__next_data__", "ng-app", "__nuxt", "reactroot", "vue"])
-    mode = "dynamic" if (js_signals or len(visible_text) < 500) else "static"
+
+    # Cloudflare challenge detection
+    server = resp.headers.get("server", "").lower()
+    if ("cloudflare" in server or "__cf_chl" in lower) and len(html) < 15000:
+        return html, "blocked", "static", True
+
+    # Framework detection
+    if "__next_data__" in lower or "_next/static" in lower:
+        return html, "nextjs", "dynamic", False
+    if "data-reactroot" in lower or '"react"' in lower or "react-app" in lower:
+        return html, "react_spa", "dynamic", False
+    if "__nuxt" in lower or "nuxt" in lower:
+        return html, "vue", "dynamic", False
+    if "wp-content" in lower or "wp-json" in lower:
+        return html, "wordpress", "static", False
+
+    return html, "static", "static", False
+
+
+async def _fetch_html(url: str) -> tuple[str, str]:
+    """Fetch URL, return (html, mode). Raises on blocked or HTTP errors."""
+    html, framework, mode, is_blocked = await _fetch_html_and_detect(url)
+    if is_blocked:
+        raise httpx.HTTPStatusError(
+            f"Site is blocking requests (framework={framework})",
+            request=httpx.Request("GET", url),
+            response=httpx.Response(403),
+        )
     return html, mode
 
 
@@ -261,6 +294,42 @@ def _name_from_url(url: str) -> str:
     name = domain.split(".")[0]
     name = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
     return name or "site"
+
+
+def _make_suggested_config(url: str, framework: str, mode: str, selectors: dict) -> dict:
+    """Build a suggested site config dict from detection results."""
+    parsed = urlparse(url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    domain = parsed.netloc.replace("www.", "")
+    name = _name_from_url(url)
+    display_name = domain.replace("-", " ").replace(".", " ").title()
+
+    return {
+        "name": name,
+        "display_name": display_name,
+        "start_url": url,
+        "mode": mode,
+        "enabled": True,
+        "pagination": True,
+        "pagination_type": "page_param",
+        "pagination_param": "page",
+        "max_pages": 20,
+        "detail_page": False,
+        "proxy_tier": "none",
+        "rate_limit_delay": 2,
+        "base_url": base_url,
+        "selectors": {
+            "listing_container": selectors.get("listing_container", ""),
+            "name": selectors.get("name", ""),
+            "price": selectors.get("price", ""),
+            "image": selectors.get("image", ""),
+            "location": selectors.get("location", ""),
+            "detail_link": selectors.get("detail_link", ""),
+            "next_page": "",
+        },
+        "fields": ["name", "price", "brand", "image", "location", "description", "specs"],
+    }
+
 
 security = HTTPBearer(auto_error=False)
 
@@ -408,31 +477,15 @@ async def get_overview(
 
 
 # ---------------------------------------------------------------------------
-# Site configs  (reads/writes JSON files in site_configs/)
+# Site configs  (all stored in site_configs DB table)
 # ---------------------------------------------------------------------------
 
-def _load_all_configs() -> list[dict]:
-    configs = []
-    if not SITE_CONFIGS_DIR.exists():
-        return configs
-    for path in sorted(SITE_CONFIGS_DIR.glob("*.json")):
-        try:
-            with open(path, encoding="utf-8") as f:
-                cfg = json.load(f)
-            cfg["_filename"] = path.name
-            configs.append(cfg)
-        except Exception:
-            pass
-    return configs
-
-
-def _load_config(name: str) -> tuple[dict, Path] | tuple[None, None]:
-    path = SITE_CONFIGS_DIR / f"{name}.json"
-    if not path.exists():
-        return None, None
-    with open(path, encoding="utf-8") as f:
-        cfg = json.load(f)
-    return cfg, path
+def _health_from_failures(consecutive_failures: int) -> str:
+    if consecutive_failures == 0:
+        return "good"
+    if consecutive_failures < 5:
+        return "failing"
+    return "disabled"
 
 
 @router.get("/configs")
@@ -440,7 +493,8 @@ async def list_configs(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
-    configs = _load_all_configs()
+    sc_result = await db.execute(select(SiteConfig).order_by(SiteConfig.name))
+    sc_list = list(sc_result.scalars().all())
 
     # Enrich with machine counts
     counts_result = await db.execute(
@@ -457,13 +511,197 @@ async def list_configs(
     )
     last_scrape = {r.site_name: r.last for r in last_scrape_result}
 
-    for cfg in configs:
-        name = cfg.get("name", "")
-        cfg["machine_count"] = counts.get(name, 0)
-        last = last_scrape.get(name)
+    configs = []
+    for sc in sc_list:
+        cfg = dict(sc.config_json or {})
+        cfg["name"] = sc.name
+        cfg["display_name"] = sc.display_name or cfg.get("display_name", sc.name)
+        cfg["enabled"] = sc.is_active
+        cfg["machine_count"] = counts.get(sc.name, 0)
+        last = last_scrape.get(sc.name)
         cfg["last_scraped"] = last.isoformat() if last else None
 
+        # Health tracking fields
+        consec = cfg.get("consecutive_failures", 0)
+        cfg["health"] = _health_from_failures(consec)
+        cfg["consecutive_failures"] = consec
+        cfg["last_error"] = cfg.get("last_error") or None
+
+        # Scrapable field
+        mode = cfg.get("mode", "static")
+        if not sc.is_active:
+            cfg["scrapable_now"] = False
+        elif mode in ("dynamic", "stealth"):
+            cfg["scrapable_now"] = False
+        else:
+            cfg["scrapable_now"] = True
+
+        configs.append(cfg)
+
     return {"configs": configs}
+
+
+@router.post("/configs/detect")
+async def detect_site(
+    body: dict,
+    _: AdminUser = Depends(_get_current_admin),
+):
+    """
+    Detect framework and auto-find selectors for a URL.
+    Does NOT save — returns suggested_config for the admin to review and confirm.
+    Body: { "url": "https://example.com" }
+    """
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="'url' is required")
+
+    try:
+        html, framework, mode, is_blocked = await _fetch_html_and_detect(url)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code in (403, 429):
+            return {
+                "url": url,
+                "framework": "blocked",
+                "mode": "static",
+                "scrapable_now": False,
+                "reason": "Site is blocking requests - requires proxy",
+                "suggested_config": _make_suggested_config(url, "blocked", "static", {}),
+            }
+        raise HTTPException(status_code=400, detail=f"HTTP {e.response.status_code} fetching URL")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not fetch URL: {e}")
+
+    if is_blocked:
+        return {
+            "url": url,
+            "framework": "blocked",
+            "mode": "static",
+            "scrapable_now": False,
+            "reason": "Site is blocking requests - requires proxy",
+            "suggested_config": _make_suggested_config(url, "blocked", "static", {}),
+        }
+
+    if mode == "dynamic":
+        framework_labels = {
+            "nextjs": "Next.js",
+            "react_spa": "React",
+            "vue": "Vue/Nuxt",
+        }
+        label = framework_labels.get(framework, framework)
+        return {
+            "url": url,
+            "framework": framework,
+            "mode": "dynamic",
+            "scrapable_now": False,
+            "reason": f"JavaScript framework detected ({label}) - requires Playwright (upgrade plan)",
+            "suggested_config": _make_suggested_config(url, framework, "dynamic", {}),
+        }
+
+    # Static site — auto-detect selectors
+    selectors = _auto_detect_selectors(html, url)
+
+    # Count detected items
+    detected_count = 0
+    confidence = "low"
+    if selectors.get("listing_container"):
+        soup_tmp = BeautifulSoup(html, "lxml")
+        detected_count = len(soup_tmp.select(selectors["listing_container"]))
+        filled = sum(1 for k in ["name", "price", "image", "location", "detail_link"] if selectors.get(k))
+        if filled >= 4:
+            confidence = "high"
+        elif filled >= 2:
+            confidence = "medium"
+
+    suggested = _make_suggested_config(url, framework, "static", selectors)
+
+    return {
+        "url": url,
+        "framework": framework,
+        "mode": "static",
+        "scrapable_now": True,
+        "reason": "Plain HTML site - can scrape immediately",
+        "detected_count": detected_count,
+        "confidence": confidence,
+        "suggested_config": suggested,
+    }
+
+
+@router.post("/configs/detect-bulk")
+async def detect_bulk(
+    body: dict,
+    _: AdminUser = Depends(_get_current_admin),
+):
+    """
+    Detect framework and selectors for up to 50 URLs at once.
+    Body: { "urls": ["url1", "url2", ...] }
+    """
+    urls = body.get("urls") or []
+    if not urls:
+        raise HTTPException(status_code=400, detail="'urls' list is required")
+    if len(urls) > 50:
+        raise HTTPException(status_code=400, detail="Maximum 50 URLs at once")
+
+    sem = asyncio.Semaphore(5)  # max 5 concurrent fetches
+
+    async def _detect_one(url: str) -> dict:
+        async with sem:
+            try:
+                html, framework, mode, is_blocked = await _fetch_html_and_detect(url)
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                if code in (403, 429):
+                    return {
+                        "url": url,
+                        "framework": "blocked",
+                        "mode": "static",
+                        "scrapable_now": False,
+                        "reason": f"HTTP {code} - site is blocking requests",
+                        "suggested_config": _make_suggested_config(url, "blocked", "static", {}),
+                    }
+                return {"url": url, "error": f"HTTP {code}"}
+            except Exception as e:
+                return {"url": url, "error": str(e)[:200]}
+
+            if is_blocked:
+                return {
+                    "url": url,
+                    "framework": "blocked",
+                    "mode": "static",
+                    "scrapable_now": False,
+                    "reason": "Site is blocking requests - requires proxy",
+                    "suggested_config": _make_suggested_config(url, "blocked", "static", {}),
+                }
+
+            if mode == "dynamic":
+                framework_labels = {"nextjs": "Next.js", "react_spa": "React", "vue": "Vue/Nuxt"}
+                label = framework_labels.get(framework, framework)
+                return {
+                    "url": url,
+                    "framework": framework,
+                    "mode": "dynamic",
+                    "scrapable_now": False,
+                    "reason": f"JavaScript framework ({label}) - requires Playwright",
+                    "suggested_config": _make_suggested_config(url, framework, "dynamic", {}),
+                }
+
+            selectors = _auto_detect_selectors(html, url)
+            detected_count = 0
+            if selectors.get("listing_container"):
+                soup_tmp = BeautifulSoup(html, "lxml")
+                detected_count = len(soup_tmp.select(selectors["listing_container"]))
+
+            return {
+                "url": url,
+                "framework": framework,
+                "mode": "static",
+                "scrapable_now": True,
+                "reason": "Plain HTML site - can scrape immediately",
+                "detected_count": detected_count,
+                "suggested_config": _make_suggested_config(url, framework, "static", selectors),
+            }
+
+    results = await asyncio.gather(*[_detect_one(u) for u in urls])
+    return {"results": list(results)}
 
 
 @router.post("/configs/auto-detect")
@@ -474,7 +712,8 @@ async def auto_detect_config(
     _: AdminUser = Depends(_get_current_admin),
 ):
     """
-    Auto-detect CSS selectors for a machine listing site and immediately start scraping.
+    Auto-detect CSS selectors for a machine listing site, save to DB,
+    and immediately start scraping.
     Body: { url: str, name: str (optional) }
     """
     url = (body.get("url") or body.get("start_url") or "").strip()
@@ -486,27 +725,31 @@ async def auto_detect_config(
     if not name:
         name = _name_from_url(url)
 
-    # Make name unique — append counter if already exists
+    # Make name unique — append counter if already exists in DB
     base_name = name
     counter = 1
-    while (SITE_CONFIGS_DIR / f"{name}.json").exists():
+    while await db.scalar(select(SiteConfig).where(SiteConfig.name == name)):
         name = f"{base_name}-{counter}"
         counter += 1
 
     # Fetch the page
     try:
-        html, mode = await _fetch_html(url)
+        html, framework, mode, is_blocked = await _fetch_html_and_detect(url)
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=400, detail=f"HTTP {e.response.status_code} fetching URL")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not fetch URL: {e}")
 
-    # Auto-detect selectors
-    selectors = _auto_detect_selectors(html, url)
+    if is_blocked:
+        mode = "dynamic"
+
+    # Auto-detect selectors for static sites
+    selectors: dict = {}
+    if not is_blocked and mode == "static":
+        selectors = _auto_detect_selectors(html, url)
 
     if not selectors.get("listing_container"):
-        # Site may be JS-rendered — still create config so user can run with dynamic mode
-        mode = "dynamic"
+        mode = mode if mode == "dynamic" else "dynamic"
         selectors = {
             "listing_container": "",
             "name": "h2, h3",
@@ -518,20 +761,17 @@ async def auto_detect_config(
 
     # Count how many items were detected on page 1
     detected_count = 0
-    if selectors.get("listing_container"):
+    if selectors.get("listing_container") and html:
         soup_tmp = BeautifulSoup(html, "lxml")
         detected_count = len(soup_tmp.select(selectors["listing_container"]))
 
-    # Parse base_url from URL
     parsed_url = urlparse(url)
     base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    display_name = name.replace("-", " ").replace("_", " ").title()
 
     config = {
-        "name": name,
-        "display_name": name.replace("-", " ").replace("_", " ").title(),
         "start_url": url,
         "base_url": base_url,
-        "enabled": True,
         "mode": mode,
         "pagination": True,
         "pagination_type": "page_param",
@@ -550,22 +790,29 @@ async def auto_detect_config(
             "detail_link": selectors.get("detail_link", "a"),
             "next_page": "",
         },
+        "consecutive_failures": 0,
+        "last_error": None,
     }
 
-    # Save config JSON
-    SITE_CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
-    config_path = SITE_CONFIGS_DIR / f"{name}.json"
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
+    # Save to DB
+    sc = SiteConfig(
+        name=name,
+        display_name=display_name,
+        config_json=config,
+        is_active=True,
+    )
+    db.add(sc)
+    await db.commit()
 
     # Start scrape immediately in background
     job_id = str(uuid.uuid4())
     db_url = os.getenv("DATABASE_URL", "")
-    background_tasks.add_task(_run_scrape_background, name, config, job_id, db_url)
+    full_cfg = {**config, "name": name}
+    background_tasks.add_task(_run_scrape_background, name, full_cfg, job_id, db_url)
 
     return {
         "created": name,
-        "display_name": config["display_name"],
+        "display_name": display_name,
         "job_id": job_id,
         "detected_count": detected_count,
         "mode": mode,
@@ -577,19 +824,33 @@ async def auto_detect_config(
 @router.post("/configs")
 async def create_config(
     body: dict,
+    db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
-    name = body.get("name", "").strip()
+    name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Config 'name' is required")
 
-    path = SITE_CONFIGS_DIR / f"{name}.json"
-    if path.exists():
+    existing = await db.scalar(select(SiteConfig).where(SiteConfig.name == name))
+    if existing:
         raise HTTPException(status_code=409, detail=f"Config '{name}' already exists")
 
-    SITE_CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(body, f, indent=2, ensure_ascii=False)
+    display_name = body.get("display_name") or name.replace("-", " ").replace("_", " ").title()
+    is_active = body.get("enabled", True)
+
+    # Strip top-level fields that are stored as dedicated columns
+    config_data = {k: v for k, v in body.items() if k not in ("name", "display_name", "enabled")}
+    config_data.setdefault("consecutive_failures", 0)
+    config_data.setdefault("last_error", None)
+
+    sc = SiteConfig(
+        name=name,
+        display_name=display_name,
+        config_json=config_data,
+        is_active=is_active,
+    )
+    db.add(sc)
+    await db.commit()
 
     return {"created": name}
 
@@ -598,15 +859,25 @@ async def create_config(
 async def update_config(
     name: str,
     body: dict,
+    db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
-    _, path = _load_config(name)
-    if path is None:
+    sc = await db.scalar(select(SiteConfig).where(SiteConfig.name == name))
+    if not sc:
         raise HTTPException(status_code=404, detail=f"Config '{name}' not found")
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(body, f, indent=2, ensure_ascii=False)
+    if "display_name" in body:
+        sc.display_name = body["display_name"]
+    if "enabled" in body:
+        sc.is_active = body["enabled"]
 
+    config_data = {k: v for k, v in body.items() if k not in ("name", "display_name", "enabled")}
+    # Merge with existing config_json
+    merged = dict(sc.config_json or {})
+    merged.update(config_data)
+    sc.config_json = merged
+
+    await db.commit()
     return {"updated": name}
 
 
@@ -616,8 +887,8 @@ async def delete_config(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
-    _, path = _load_config(name)
-    if path is None:
+    sc = await db.scalar(select(SiteConfig).where(SiteConfig.name == name))
+    if not sc:
         raise HTTPException(status_code=404, detail=f"Config '{name}' not found")
 
     # Delete all machines belonging to this site from the database
@@ -627,31 +898,39 @@ async def delete_config(
 
     # Delete all scrape job history for this site
     await db.execute(delete(ScrapeJob).where(ScrapeJob.site_name == name))
+
+    # Delete the site config
+    await db.delete(sc)
     await db.commit()
 
     # Remove in-memory job entries for this site
     for jid in [k for k, v in _running_jobs.items() if v.get("site_name") == name]:
         _running_jobs.pop(jid, None)
 
-    # Remove the config JSON file
-    path.unlink()
     return {"deleted": name, "machines_removed": machine_count}
 
 
 @router.post("/configs/{name}/toggle")
 async def toggle_config(
     name: str,
+    db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
-    cfg, path = _load_config(name)
-    if cfg is None:
+    sc = await db.scalar(select(SiteConfig).where(SiteConfig.name == name))
+    if not sc:
         raise HTTPException(status_code=404, detail=f"Config '{name}' not found")
 
-    cfg["enabled"] = not cfg.get("enabled", True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    sc.is_active = not sc.is_active
 
-    return {"name": name, "enabled": cfg["enabled"]}
+    # If re-enabling, reset auto-disable failure count
+    if sc.is_active:
+        cfg = dict(sc.config_json or {})
+        cfg["consecutive_failures"] = 0
+        cfg.pop("last_error", None)
+        sc.config_json = cfg
+
+    await db.commit()
+    return {"name": name, "enabled": sc.is_active}
 
 
 # ---------------------------------------------------------------------------
@@ -659,7 +938,9 @@ async def toggle_config(
 # ---------------------------------------------------------------------------
 
 async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_url: str):
-    """Background task: runs a scrape and records results in ScrapeJob."""
+    """Background task: runs a scrape and records results in ScrapeJob.
+    Also tracks consecutive failures and auto-disables sites after 5 failures.
+    """
     from database.db import AsyncSessionLocal
     from scraper.engine import AdaptiveEngine
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -695,9 +976,9 @@ async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_u
                 pages_scraped=cfg.get("max_pages", 50),
             )
             session.add(job)
-            await session.flush()  # persist job row before machine inserts
+            await session.flush()
 
-            # Deduplicate within this batch first (same source_url appearing twice)
+            # Deduplicate within this batch first
             seen_urls: set[str] = set()
             deduped_items = []
             for item in items:
@@ -706,7 +987,6 @@ async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_u
                     seen_urls.add(url)
                     deduped_items.append(item)
 
-            # Use INSERT ... ON CONFLICT DO NOTHING to avoid unique violations
             for item in deduped_items:
                 source_url = (item.get("source_url") or "").strip()
                 if not source_url:
@@ -734,6 +1014,17 @@ async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_u
                     new_count += 1
 
             job.items_new = new_count
+
+            # Update SiteConfig health: reset failures on success
+            sc = await session.scalar(select(SiteConfig).where(SiteConfig.name == site_name))
+            if sc:
+                cfg_data = dict(sc.config_json or {})
+                cfg_data["consecutive_failures"] = 0
+                cfg_data.pop("last_error", None)
+                sc.config_json = cfg_data
+                sc.last_scraped_at = datetime.now(timezone.utc)
+                sc.total_scraped = (sc.total_scraped or 0) + new_count
+
             await session.commit()
 
         _running_jobs[job_id]["status"] = "completed"
@@ -755,6 +1046,18 @@ async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_u
                 error_message=str(exc)[:500],
             )
             session.add(job)
+
+            # Update SiteConfig health: increment consecutive failures
+            sc = await session.scalar(select(SiteConfig).where(SiteConfig.name == site_name))
+            if sc:
+                cfg_data = dict(sc.config_json or {})
+                consec = cfg_data.get("consecutive_failures", 0) + 1
+                cfg_data["consecutive_failures"] = consec
+                cfg_data["last_error"] = str(exc)[:500]
+                sc.config_json = cfg_data
+                if consec >= 5:
+                    sc.is_active = False  # auto-disable after 5 consecutive failures
+
             await session.commit()
 
         _running_jobs[job_id]["status"] = "failed"
@@ -766,12 +1069,14 @@ async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_u
 async def start_scrape(
     site_name: str,
     background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
-    cfg, _ = _load_config(site_name)
-    if cfg is None:
+    sc = await db.scalar(select(SiteConfig).where(SiteConfig.name == site_name))
+    if not sc:
         raise HTTPException(status_code=404, detail=f"Config '{site_name}' not found")
 
+    cfg = {**(sc.config_json or {}), "name": site_name}
     job_id = str(uuid.uuid4())
     db_url = os.getenv("DATABASE_URL", "")
     background_tasks.add_task(_run_scrape_background, site_name, cfg, job_id, db_url)
@@ -782,18 +1087,19 @@ async def start_scrape(
 @router.post("/scraper/start-all")
 async def start_all(
     background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
-    configs = _load_all_configs()
+    result = await db.execute(select(SiteConfig).where(SiteConfig.is_active == True))
+    sc_list = list(result.scalars().all())
+
     started = []
-    for cfg in configs:
-        if not cfg.get("enabled", True):
-            continue
+    for sc in sc_list:
+        cfg = {**(sc.config_json or {}), "name": sc.name}
         job_id = str(uuid.uuid4())
-        site_name = cfg.get("name", "")
         db_url = os.getenv("DATABASE_URL", "")
-        background_tasks.add_task(_run_scrape_background, site_name, cfg, job_id, db_url)
-        started.append({"job_id": job_id, "site_name": site_name})
+        background_tasks.add_task(_run_scrape_background, sc.name, cfg, job_id, db_url)
+        started.append({"job_id": job_id, "site_name": sc.name})
 
     return {"started": started}
 

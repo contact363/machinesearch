@@ -1,10 +1,8 @@
 """
-Site-config management router.
+Site-config management router (public API v1).
 
-Provides CRUD operations for the JSON-based site scraping configurations
-stored under backend/site_configs/.  Allows admins to create, view, update,
-enable/disable, and delete site configs without touching the filesystem
-directly (configs will eventually be stored in the database).
+All admin config management is handled by /admin/configs endpoints in admin.py.
+Site configs are stored exclusively in the site_configs DB table.
 """
 
 from fastapi import APIRouter, HTTPException, Path

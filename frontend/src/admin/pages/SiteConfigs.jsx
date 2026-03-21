@@ -1,186 +1,290 @@
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
-  getSiteConfigs, autoDetectConfig, deleteConfig, toggleConfig, startScrape,
+  getSiteConfigs, autoDetectConfig, detectSite, detectBulkSites,
+  createConfig, deleteConfig, toggleConfig, startScrape,
 } from '../api/adminClient'
 import AdminLayout from '../components/AdminLayout'
 import ConfirmModal from '../components/ConfirmModal'
 import { useToast } from '../components/Toast'
 
-// ---------- URL input row ----------
-function UrlRow({ onAdd, loading }) {
-  const [url, setUrl] = useState('')
-  const inputRef = useRef(null)
+// ─── Detection result card ────────────────────────────────────────────────────
+function DetectionCard({ result, onConfirm, onAddAnyway, onAddWithProxy, onDismiss }) {
+  if (!result) return null
 
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    const val = url.trim()
-    if (!val) return
-    onAdd(val)
-    setUrl('')
-    inputRef.current?.focus()
-  }
+  const isReady = result.scrapable_now
+  const isBlocked = result.framework === 'blocked'
+  const isDynamic = !isReady && !isBlocked
 
   return (
-    <form onSubmit={handleSubmit} className="flex gap-2">
-      <input
-        ref={inputRef}
-        type="url"
-        value={url}
-        onChange={e => setUrl(e.target.value)}
-        placeholder="https://example.com/machines  — paste any machine listing URL"
-        required
-        disabled={loading}
-        className="flex-1 border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
-      />
-      <button
-        type="submit"
-        disabled={loading || !url.trim()}
-        className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors whitespace-nowrap"
-      >
-        {loading ? (
-          <>
-            <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-            Detecting…
-          </>
-        ) : (
-          <>
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            Add & Auto-Detect
-          </>
-        )}
-      </button>
-    </form>
-  )
-}
+    <div className={`rounded-xl border p-4 text-sm ${
+      isReady
+        ? 'bg-green-50 border-green-200'
+        : isBlocked
+          ? 'bg-red-50 border-red-200'
+          : 'bg-yellow-50 border-yellow-200'
+    }`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <span className={`text-lg ${isReady ? 'text-green-600' : isBlocked ? 'text-red-500' : 'text-yellow-600'}`}>
+              {isReady ? '✓' : isBlocked ? '✕' : '⚠'}
+            </span>
+            <span className={`font-semibold ${isReady ? 'text-green-800' : isBlocked ? 'text-red-700' : 'text-yellow-800'}`}>
+              {isReady
+                ? 'Static site — ready to scrape'
+                : isBlocked
+                  ? 'Site is blocking requests'
+                  : `Dynamic site (${result.framework}) — needs Playwright`}
+            </span>
+            {result.framework && result.framework !== 'blocked' && (
+              <span className="text-xs px-1.5 py-0.5 rounded bg-white/60 text-gray-600 font-mono">
+                {result.framework}
+              </span>
+            )}
+          </div>
+          <p className={`text-xs mb-3 ${isReady ? 'text-green-700' : isBlocked ? 'text-red-600' : 'text-yellow-700'}`}>
+            {result.reason}
+          </p>
 
-// ---------- Batch paste panel ----------
-function BatchPanel({ onBatchAdd, loading }) {
-  const [text, setText] = useState('')
-  const [open, setOpen] = useState(false)
+          {isReady && result.suggested_config?.selectors && (
+            <div className="bg-white/60 rounded-lg p-2 mb-3 text-xs font-mono">
+              <p className="text-gray-500 mb-1 font-sans font-medium">Auto-detected selectors:</p>
+              {Object.entries(result.suggested_config.selectors)
+                .filter(([, v]) => v)
+                .map(([k, v]) => (
+                  <div key={k} className="flex gap-2">
+                    <span className="text-gray-400 w-28 shrink-0">{k}:</span>
+                    <span className="text-gray-700 truncate">{v}</span>
+                  </div>
+                ))}
+              {result.detected_count > 0 && (
+                <p className="mt-1 text-gray-500 font-sans">
+                  ~{result.detected_count} items detected on page 1
+                  {result.confidence && ` · confidence: ${result.confidence}`}
+                </p>
+              )}
+            </div>
+          )}
 
-  const handleSubmit = () => {
-    const urls = text
-      .split(/[\n,\s]+/)
-      .map(u => u.trim())
-      .filter(u => u.startsWith('http'))
-    if (!urls.length) return
-    onBatchAdd(urls)
-    setText('')
-    setOpen(false)
-  }
+          {isDynamic && (
+            <p className="text-xs text-yellow-700 mb-3">
+              This site uses <strong>{result.framework}</strong>.
+              Upgrade to Standard plan to enable Playwright rendering.
+            </p>
+          )}
 
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="text-sm text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1"
-      >
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-        </svg>
-        Paste multiple URLs at once
-      </button>
-      {open && (
-        <div className="mt-3 border border-gray-200 rounded-xl p-4 bg-gray-50">
-          <p className="text-xs text-gray-500 mb-2">Paste URLs — one per line, or comma-separated</p>
-          <textarea
-            value={text}
-            onChange={e => setText(e.target.value)}
-            rows={6}
-            placeholder={`https://site1.com/machines\nhttps://site2.de/angebote\nhttps://site3.com/used-equipment`}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <div className="flex justify-end gap-2 mt-2">
-            <button onClick={() => setOpen(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+          {isBlocked && (
+            <p className="text-xs text-red-600 mb-3">
+              This site blocks scrapers. Add proxy support to enable.
+            </p>
+          )}
+
+          <div className="flex gap-2 flex-wrap">
+            {isReady && (
+              <button
+                onClick={() => onConfirm(result)}
+                className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs rounded-lg font-medium"
+              >
+                Confirm & Add
+              </button>
+            )}
+            {isDynamic && (
+              <button
+                onClick={() => onAddAnyway(result)}
+                className="px-3 py-1.5 bg-yellow-500 hover:bg-yellow-600 text-white text-xs rounded-lg font-medium"
+              >
+                Add Anyway (disabled)
+              </button>
+            )}
+            {isBlocked && (
+              <button
+                onClick={() => onAddWithProxy(result)}
+                className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs rounded-lg font-medium"
+              >
+                Add with Proxy (disabled)
+              </button>
+            )}
             <button
-              onClick={handleSubmit}
-              disabled={loading || !text.trim()}
-              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm rounded-lg font-medium transition-colors"
+              onClick={onDismiss}
+              className="px-3 py-1.5 text-gray-500 hover:text-gray-700 text-xs rounded-lg font-medium"
             >
-              Add All URLs
+              Dismiss
             </button>
           </div>
         </div>
-      )}
-    </div>
-  )
-}
-
-// ---------- Detection result toast card ----------
-function DetectResult({ result, onClose }) {
-  if (!result) return null
-  return (
-    <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 text-sm ${
-      result.error
-        ? 'bg-red-50 border-red-200 text-red-700'
-        : result.needs_js
-          ? 'bg-yellow-50 border-yellow-200 text-yellow-800'
-          : 'bg-green-50 border-green-200 text-green-700'
-    }`}>
-      <div className="flex-1">
-        {result.error ? (
-          <p><strong>Failed:</strong> {result.error}</p>
-        ) : result.needs_js ? (
-          <p>
-            <strong>{result.display_name}</strong> uses JavaScript rendering.
-            Config saved — scrape will use dynamic mode.
-            {result.detected_count > 0 && ` Detected ~${result.detected_count} items on page 1.`}
-          </p>
-        ) : (
-          <p>
-            <strong>{result.display_name}</strong> added.
-            Detected <strong>{result.detected_count}</strong> items on page 1.
-            Scraping in background…
-          </p>
-        )}
       </div>
-      <button onClick={onClose} className="text-current opacity-50 hover:opacity-100 flex-shrink-0">✕</button>
     </div>
   )
 }
 
-// ---------- Queue bar (batch progress) ----------
-function QueueBar({ queue }) {
-  if (!queue.length) return null
-  const done = queue.filter(q => q.status !== 'pending').length
-  const pct = Math.round((done / queue.length) * 100)
+// ─── Bulk results table ───────────────────────────────────────────────────────
+function BulkResultsTable({ results, onAddOne, onAddAllReady, onAddAll, adding }) {
+  if (!results.length) return null
+
+  const ready = results.filter(r => r.scrapable_now && !r.error)
+  const total = results.length
+
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+        <span className="text-sm font-semibold text-gray-700">
+          Detection Results
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            {ready.length} ready / {total} total
+          </span>
+        </span>
+        <div className="flex gap-2">
+          <button
+            onClick={onAddAllReady}
+            disabled={adding || ready.length === 0}
+            className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs rounded-lg font-medium"
+          >
+            Add All Ready ({ready.length})
+          </button>
+          <button
+            onClick={onAddAll}
+            disabled={adding}
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs rounded-lg font-medium"
+          >
+            Add All ({total})
+          </button>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-gray-100 bg-gray-50/50">
+              <th className="text-left px-4 py-2 font-semibold text-gray-500 uppercase tracking-wide">URL</th>
+              <th className="text-left px-3 py-2 font-semibold text-gray-500 uppercase tracking-wide">Framework</th>
+              <th className="text-left px-3 py-2 font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+              <th className="text-right px-3 py-2 font-semibold text-gray-500 uppercase tracking-wide">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {results.map((r, i) => (
+              <tr key={i} className="hover:bg-gray-50">
+                <td className="px-4 py-2 text-blue-600 truncate max-w-xs">
+                  {r.error ? (
+                    <span className="text-red-500">{r.url}</span>
+                  ) : (
+                    <a href={r.url} target="_blank" rel="noreferrer" className="hover:underline">
+                      {r.url?.replace(/^https?:\/\/(www\.)?/, '')}
+                    </a>
+                  )}
+                </td>
+                <td className="px-3 py-2">
+                  <span className={`px-1.5 py-0.5 rounded font-medium ${
+                    r.framework === 'static' || r.framework === 'wordpress'
+                      ? 'bg-green-100 text-green-700'
+                      : r.framework === 'blocked'
+                        ? 'bg-red-100 text-red-700'
+                        : 'bg-yellow-100 text-yellow-700'
+                  }`}>
+                    {r.framework || '—'}
+                  </span>
+                </td>
+                <td className="px-3 py-2">
+                  {r.error ? (
+                    <span className="text-red-500">Error: {r.error}</span>
+                  ) : r.scrapable_now ? (
+                    <span className="text-green-600 font-medium">Ready</span>
+                  ) : r.framework === 'blocked' ? (
+                    <span className="text-red-500">Blocked</span>
+                  ) : (
+                    <span className="text-yellow-600">Needs Playwright</span>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  {!r.error && (
+                    <button
+                      onClick={() => onAddOne(r)}
+                      disabled={adding}
+                      className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded text-xs font-medium disabled:opacity-50"
+                    >
+                      Add
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Progress bar for bulk processing ────────────────────────────────────────
+function ProgressBar({ label, current, total }) {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0
   return (
     <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
       <div className="flex items-center justify-between mb-2">
-        <p className="text-sm font-medium text-blue-700">Processing {queue.length} URLs… ({done}/{queue.length})</p>
-        <span className="text-sm text-blue-600">{pct}%</span>
+        <p className="text-sm font-medium text-blue-700">{label}</p>
+        <span className="text-sm text-blue-600">{current}/{total} ({pct}%)</span>
       </div>
       <div className="h-1.5 bg-blue-200 rounded-full overflow-hidden">
         <div className="h-full bg-blue-600 rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
       </div>
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        {queue.map((q, i) => (
-          <span key={i} className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-            q.status === 'done' ? 'bg-green-100 text-green-700' :
-            q.status === 'error' ? 'bg-red-100 text-red-700' :
-            q.status === 'running' ? 'bg-blue-100 text-blue-700 animate-pulse' :
-            'bg-gray-100 text-gray-500'
-          }`}>
-            {new URL(q.url).hostname.replace('www.', '')}
-          </span>
-        ))}
-      </div>
     </div>
   )
 }
 
-// ---------- Main page ----------
+// ─── Mode badge ───────────────────────────────────────────────────────────────
+function ModeBadge({ mode }) {
+  const map = {
+    static: 'bg-green-100 text-green-700',
+    dynamic: 'bg-yellow-100 text-yellow-700',
+    stealth: 'bg-orange-100 text-orange-700',
+  }
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded font-medium ${map[mode] || 'bg-blue-50 text-blue-600'}`}>
+      {mode || 'static'}
+    </span>
+  )
+}
+
+// ─── Scrapable dot ────────────────────────────────────────────────────────────
+function ScrapableDot({ scrapable, reason, health, lastError }) {
+  const tooltip = !scrapable
+    ? (lastError ? `Last error: ${lastError}` : reason || 'Not scrapable')
+    : 'Scrapable'
+  return (
+    <span title={tooltip} className="cursor-help inline-flex items-center gap-1">
+      <span className={`w-2.5 h-2.5 rounded-full inline-block ${
+        scrapable ? 'bg-green-500' : health === 'failing' ? 'bg-orange-400' : 'bg-red-400'
+      }`} />
+      {health === 'failing' && (
+        <span className="text-xs text-orange-500 font-medium">failing</span>
+      )}
+      {health === 'disabled' && (
+        <span className="text-xs text-red-500 font-medium">auto-off</span>
+      )}
+    </span>
+  )
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
 export default function SiteConfigs() {
   const navigate = useNavigate()
+  const [activeTab, setActiveTab] = useState('single') // 'single' | 'bulk'
   const [deleteTarget, setDeleteTarget] = useState(null)
-  const [lastResult, setLastResult] = useState(null)
-  const [queue, setQueue] = useState([])   // batch processing queue
-  const [batchRunning, setBatchRunning] = useState(false)
+
+  // Single URL tab state
+  const [singleUrl, setSingleUrl] = useState('')
+  const [detecting, setDetecting] = useState(false)
+  const [detectionResult, setDetectionResult] = useState(null)
+  const [confirming, setConfirming] = useState(false)
+
+  // Bulk tab state
+  const [bulkText, setBulkText] = useState('')
+  const [bulkDetecting, setBulkDetecting] = useState(false)
+  const [bulkResults, setBulkResults] = useState([])
+  const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 })
+  const [bulkAdding, setBulkAdding] = useState(false)
 
   const qc = useQueryClient()
   const toast = useToast()
@@ -188,7 +292,7 @@ export default function SiteConfigs() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['configs'],
     queryFn: getSiteConfigs,
-    refetchInterval: batchRunning ? 3000 : false,
+    refetchInterval: (bulkDetecting || bulkAdding) ? 3000 : false,
   })
 
   const deleteMut = useMutation({
@@ -215,50 +319,171 @@ export default function SiteConfigs() {
     onError: e => toast(e.response?.data?.detail || 'Start failed', 'error'),
   })
 
-  // Single URL add with auto-detect
-  const [detecting, setDetecting] = useState(false)
-  const handleAddUrl = async (url) => {
+  // ── Single URL: detect ────────────────────────────────────────────────────
+  const handleDetect = async (e) => {
+    e.preventDefault()
+    const url = singleUrl.trim()
+    if (!url) return
     setDetecting(true)
-    setLastResult(null)
+    setDetectionResult(null)
     try {
-      const result = await autoDetectConfig(url, '')
-      setLastResult(result)
-      qc.invalidateQueries({ queryKey: ['configs'] })
-      toast(`Added ${result.display_name} — scraping in background`, 'success')
-    } catch (e) {
-      const msg = e.response?.data?.detail || e.message || 'Detection failed'
-      setLastResult({ error: msg })
-      toast(msg, 'error')
+      const result = await detectSite(url)
+      setDetectionResult(result)
+    } catch (err) {
+      toast(err.response?.data?.detail || err.message || 'Detection failed', 'error')
     } finally {
       setDetecting(false)
     }
   }
 
-  // Batch URL processing
-  const handleBatchAdd = async (urls) => {
-    const items = urls.map(url => ({ url, status: 'pending' }))
-    setQueue(items)
-    setBatchRunning(true)
-    setLastResult(null)
+  // ── Single URL: confirm & add (re-runs auto-detect which saves + scrapes) ──
+  const handleConfirm = async (result) => {
+    setConfirming(true)
+    try {
+      const r = await autoDetectConfig(result.url, '')
+      toast(`Added ${r.display_name} — scraping in background`, 'success')
+      setDetectionResult(null)
+      setSingleUrl('')
+      qc.invalidateQueries({ queryKey: ['configs'] })
+    } catch (err) {
+      toast(err.response?.data?.detail || 'Failed to add site', 'error')
+    } finally {
+      setConfirming(false)
+    }
+  }
 
-    for (let i = 0; i < items.length; i++) {
-      setQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'running' } : q))
-      try {
-        await autoDetectConfig(items[i].url, '')
-        setQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'done' } : q))
-      } catch (e) {
-        setQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'error' } : q))
+  // ── Single URL: add anyway (dynamic/blocked — disabled) ───────────────────
+  const handleAddAnyway = async (result) => {
+    setConfirming(true)
+    try {
+      const cfg = {
+        ...result.suggested_config,
+        mode: 'dynamic',
+        enabled: false,
       }
+      await createConfig(cfg)
+      toast(`Added ${cfg.name} (disabled — upgrade to enable)`, 'success')
+      setDetectionResult(null)
+      setSingleUrl('')
+      qc.invalidateQueries({ queryKey: ['configs'] })
+    } catch (err) {
+      toast(err.response?.data?.detail || 'Failed to add site', 'error')
+    } finally {
+      setConfirming(false)
+    }
+  }
+
+  // ── Single URL: add with proxy (blocked — disabled) ───────────────────────
+  const handleAddWithProxy = async (result) => {
+    setConfirming(true)
+    try {
+      const cfg = {
+        ...result.suggested_config,
+        proxy_tier: 'datacenter',
+        enabled: false,
+      }
+      await createConfig(cfg)
+      toast(`Added ${cfg.name} (disabled — add proxy to enable)`, 'success')
+      setDetectionResult(null)
+      setSingleUrl('')
+      qc.invalidateQueries({ queryKey: ['configs'] })
+    } catch (err) {
+      toast(err.response?.data?.detail || 'Failed to add site', 'error')
+    } finally {
+      setConfirming(false)
+    }
+  }
+
+  // ── Bulk: detect all ──────────────────────────────────────────────────────
+  const handleBulkDetect = async () => {
+    const urls = bulkText
+      .split(/[\n,]+/)
+      .map(u => u.trim())
+      .filter(u => u.startsWith('http'))
+      .slice(0, 50)
+
+    if (!urls.length) {
+      toast('No valid URLs found', 'error')
+      return
     }
 
-    setBatchRunning(false)
+    setBulkDetecting(true)
+    setBulkResults([])
+    setBulkProgress({ current: 0, total: urls.length })
+
+    try {
+      const data = await detectBulkSites(urls)
+      setBulkResults(data.results || [])
+      setBulkProgress({ current: urls.length, total: urls.length })
+      toast(`Detected ${urls.length} sites`, 'success')
+    } catch (err) {
+      toast(err.response?.data?.detail || 'Bulk detection failed', 'error')
+    } finally {
+      setBulkDetecting(false)
+    }
+  }
+
+  // ── Bulk: add one site ────────────────────────────────────────────────────
+  const addSiteFromResult = async (r) => {
+    if (r.scrapable_now) {
+      await autoDetectConfig(r.url, '')
+    } else {
+      const cfg = {
+        ...r.suggested_config,
+        enabled: false,
+        mode: r.mode || 'dynamic',
+        proxy_tier: r.framework === 'blocked' ? 'datacenter' : 'none',
+      }
+      await createConfig(cfg)
+    }
+  }
+
+  const handleBulkAddOne = async (result) => {
+    setBulkAdding(true)
+    try {
+      await addSiteFromResult(result)
+      toast(`Added ${result.url}`, 'success')
+      qc.invalidateQueries({ queryKey: ['configs'] })
+    } catch (err) {
+      toast(err.response?.data?.detail || 'Failed to add site', 'error')
+    } finally {
+      setBulkAdding(false)
+    }
+  }
+
+  const handleAddAllReady = async () => {
+    const ready = bulkResults.filter(r => r.scrapable_now && !r.error)
+    setBulkAdding(true)
+    let added = 0
+    for (const r of ready) {
+      try {
+        await addSiteFromResult(r)
+        added++
+      } catch { /* continue */ }
+    }
+    setBulkAdding(false)
     qc.invalidateQueries({ queryKey: ['configs'] })
-    toast(`Finished adding ${urls.length} sites`, 'success')
-    setTimeout(() => setQueue([]), 5000)
+    toast(`Added ${added} of ${ready.length} ready sites`, 'success')
+  }
+
+  const handleAddAll = async () => {
+    setBulkAdding(true)
+    let added = 0
+    for (const r of bulkResults) {
+      if (r.error) continue
+      try {
+        await addSiteFromResult(r)
+        added++
+      } catch { /* continue */ }
+    }
+    setBulkAdding(false)
+    qc.invalidateQueries({ queryKey: ['configs'] })
+    toast(`Added ${added} sites`, 'success')
   }
 
   const configs = data?.configs || []
   const fmt = (dt) => dt ? new Date(dt).toLocaleDateString() : '—'
+  const isLoading2 = confirming || bulkAdding
 
   return (
     <AdminLayout>
@@ -266,22 +491,126 @@ export default function SiteConfigs() {
         {/* Header */}
         <div>
           <h1 className="text-lg font-bold text-gray-900 mb-1">Web Sources</h1>
-          <p className="text-sm text-gray-400">Paste any machine listing page URL — we'll auto-detect the structure and start scraping.</p>
+          <p className="text-sm text-gray-400">Add machine listing sites — we'll auto-detect the structure and start scraping.</p>
         </div>
 
-        {/* URL input card */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5 space-y-3">
-          <UrlRow onAdd={handleAddUrl} loading={detecting || batchRunning} />
-          <BatchPanel onBatchAdd={handleBatchAdd} loading={batchRunning} />
+        {/* Add New Sources card */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="border-b border-gray-100 flex">
+            {['single', 'bulk'].map(tab => (
+              <button
+                key={tab}
+                onClick={() => { setActiveTab(tab); setDetectionResult(null) }}
+                className={`px-5 py-3 text-sm font-medium transition-colors ${
+                  activeTab === tab
+                    ? 'text-blue-600 border-b-2 border-blue-500 bg-blue-50/30'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                {tab === 'single' ? 'Single URL' : 'Bulk Add (up to 50)'}
+              </button>
+            ))}
+          </div>
+
+          <div className="p-5 space-y-4">
+            {/* ─ Single URL tab ─ */}
+            {activeTab === 'single' && (
+              <>
+                <form onSubmit={handleDetect} className="flex gap-2">
+                  <input
+                    type="url"
+                    value={singleUrl}
+                    onChange={e => setSingleUrl(e.target.value)}
+                    placeholder="https://example.com/machines  — paste any machine listing URL"
+                    required
+                    disabled={detecting || confirming}
+                    className="flex-1 border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+                  />
+                  <button
+                    type="submit"
+                    disabled={detecting || confirming || !singleUrl.trim()}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    {detecting ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Detecting…
+                      </>
+                    ) : 'Detect & Add'}
+                  </button>
+                </form>
+
+                {detectionResult && (
+                  <DetectionCard
+                    result={detectionResult}
+                    onConfirm={handleConfirm}
+                    onAddAnyway={handleAddAnyway}
+                    onAddWithProxy={handleAddWithProxy}
+                    onDismiss={() => setDetectionResult(null)}
+                  />
+                )}
+
+                {confirming && (
+                  <div className="flex items-center gap-2 text-sm text-blue-600">
+                    <span className="w-4 h-4 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+                    Adding site and starting scrape…
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ─ Bulk tab ─ */}
+            {activeTab === 'bulk' && (
+              <>
+                <textarea
+                  value={bulkText}
+                  onChange={e => setBulkText(e.target.value)}
+                  rows={8}
+                  placeholder={`Paste URLs one per line (max 50):\n\nhttps://site1.com/machines\nhttps://site2.de/angebote\nhttps://site3.com/used-equipment`}
+                  disabled={bulkDetecting}
+                  className="w-full border border-gray-200 rounded-lg px-4 py-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+                />
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleBulkDetect}
+                    disabled={bulkDetecting || !bulkText.trim()}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors"
+                  >
+                    {bulkDetecting ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Detecting…
+                      </>
+                    ) : 'Detect All'}
+                  </button>
+                  <span className="text-xs text-gray-400">
+                    {bulkText.split(/[\n,]+/).filter(u => u.trim().startsWith('http')).length} URLs detected
+                  </span>
+                </div>
+
+                {bulkDetecting && (
+                  <ProgressBar
+                    label="Detecting sites…"
+                    current={bulkProgress.current}
+                    total={bulkProgress.total}
+                  />
+                )}
+
+                {bulkResults.length > 0 && (
+                  <BulkResultsTable
+                    results={bulkResults}
+                    onAddOne={handleBulkAddOne}
+                    onAddAllReady={handleAddAllReady}
+                    onAddAll={handleAddAll}
+                    adding={bulkAdding}
+                  />
+                )}
+              </>
+            )}
+          </div>
         </div>
 
-        {/* Queue progress */}
-        {queue.length > 0 && <QueueBar queue={queue} />}
-
-        {/* Detection result */}
-        {lastResult && <DetectResult result={lastResult} onClose={() => setLastResult(null)} />}
-
-        {/* Sites table */}
+        {/* Configured Sites table */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
             <span className="font-semibold text-gray-900">
@@ -289,7 +618,7 @@ export default function SiteConfigs() {
               <span className="ml-2 text-sm font-normal text-gray-400">({configs.length})</span>
             </span>
             <button
-              onClick={() => { scrapeMut.mutate ? null : null; navigate('/admin/jobs') }}
+              onClick={() => navigate('/admin/jobs')}
               className="text-sm text-blue-600 hover:text-blue-800 font-medium"
             >
               View scrape logs →
@@ -314,6 +643,7 @@ export default function SiteConfigs() {
                     <th className="text-left px-5 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wide">Site / URL</th>
                     <th className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wide">Status</th>
                     <th className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wide">Mode</th>
+                    <th className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wide">Scrapable</th>
                     <th className="text-right px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wide">Machines</th>
                     <th className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wide">Last Crawl</th>
                     <th className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wide">Actions</th>
@@ -321,9 +651,17 @@ export default function SiteConfigs() {
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                   {configs.map(cfg => (
-                    <tr key={cfg.name} className="hover:bg-gray-50 transition-colors">
+                    <tr key={cfg.name} className={`hover:bg-gray-50 transition-colors ${cfg.health === 'failing' ? 'bg-orange-50/30' : cfg.health === 'disabled' ? 'bg-red-50/20' : ''}`}>
                       <td className="px-5 py-3">
-                        <p className="font-semibold text-gray-800 text-sm">{cfg.display_name || cfg.name}</p>
+                        <p className="font-semibold text-gray-800 text-sm flex items-center gap-2">
+                          {cfg.display_name || cfg.name}
+                          {cfg.health === 'failing' && (
+                            <span title={`${cfg.consecutive_failures} consecutive failures`} className="text-orange-500 text-xs">⚠</span>
+                          )}
+                          {cfg.health === 'disabled' && (
+                            <span title="Auto-disabled after 5 failures" className="text-red-500 text-xs">✕ auto-off</span>
+                          )}
+                        </p>
                         <a href={cfg.start_url} target="_blank" rel="noreferrer"
                           className="text-xs text-blue-500 hover:underline truncate max-w-xs block">
                           {cfg.start_url || cfg.name}
@@ -338,13 +676,14 @@ export default function SiteConfigs() {
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`text-xs px-2 py-0.5 rounded font-medium ${
-                          cfg.mode === 'dynamic' ? 'bg-purple-100 text-purple-700' :
-                          cfg.mode === 'stealth' ? 'bg-orange-100 text-orange-700' :
-                          'bg-blue-50 text-blue-600'
-                        }`}>
-                          {cfg.mode || 'static'}
-                        </span>
+                        <ModeBadge mode={cfg.mode} />
+                      </td>
+                      <td className="px-4 py-3">
+                        <ScrapableDot
+                          scrapable={cfg.scrapable_now}
+                          health={cfg.health}
+                          lastError={cfg.last_error}
+                        />
                       </td>
                       <td className="px-4 py-3 text-right font-semibold text-gray-800">
                         {(cfg.machine_count || 0).toLocaleString()}
@@ -380,7 +719,7 @@ export default function SiteConfigs() {
                   ))}
                   {configs.length === 0 && !isLoading && (
                     <tr>
-                      <td colSpan={6} className="text-center py-16">
+                      <td colSpan={7} className="text-center py-16">
                         <div className="text-gray-300 text-4xl mb-3">🌐</div>
                         <p className="text-gray-500 font-medium">No sites added yet</p>
                         <p className="text-gray-400 text-sm mt-1">Paste a URL above to get started</p>
