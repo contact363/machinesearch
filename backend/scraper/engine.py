@@ -755,8 +755,7 @@ class AdaptiveEngine:
                     f"{supabase_url}/rest/v1/machines_public"
                     f"?select=id,model_name,brand_id,price,currency,main_image_url,"
                     f"model_name,condition,location_country,location_city,"
-                    f"description,source_url,sku_number,year,controller"
-                    f"&status=eq.active"
+                    f"description,source_url,sku_number,year,controller,status"
                     f"&limit={page_size}&offset={offset}"
                 )
                 try:

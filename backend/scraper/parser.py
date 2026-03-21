@@ -241,12 +241,19 @@ class DataParser:
 
     def generate_dedup_key(self, item: dict) -> str:
         """
-        Return an MD5 hex digest of (name.lower + str(price) + domain).
-        Used to detect duplicate listings across paginated pages.
+        Return an MD5 hex digest used to detect duplicate listings.
+
+        Prefer the full source_url as the dedup key when available — this is
+        exact and works well for API scrapers where every record has a unique
+        URL.  Fall back to name+price+domain for HTML scrapers where the URL
+        may not reliably differ across duplicate listing cards.
         """
+        source_url = (item.get("source_url") or "").strip()
+        if source_url:
+            return hashlib.md5(source_url.encode("utf-8")).hexdigest()
         name = (item.get("name") or "").lower().strip()
         price = str(item.get("price") or "")
-        domain = urlparse(item.get("source_url") or "").netloc
+        domain = urlparse(source_url).netloc
         raw = f"{name}|{price}|{domain}"
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
