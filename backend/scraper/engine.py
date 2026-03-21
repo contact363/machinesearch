@@ -723,6 +723,180 @@ class AdaptiveEngine:
         logger.info("[%s] API scrape complete: %d total items", site_name, len(all_items))
         return all_items
 
+    async def scrape_bade_maschinen_api(self, config: dict) -> list[dict]:
+        """
+        Scrape bade-maschinen.de via its custom JSON REST API.
+
+        Calls https://api.bade-maschinen.de/api/item to get all listings.
+        Returns a flat list of raw item dicts.
+        """
+        site_name = config.get("name", "bade-maschinen")
+        api_url = "https://api.bade-maschinen.de/api/item?q={}&p={}&o=%7B%22skip%22%3A0%2C%22limit%22%3A200%7D"
+        base_site_url = "https://www.bade-maschinen.de"
+        headers = self._ua.get_headers(base_site_url)
+
+        all_items: list[dict] = []
+
+        async with httpx.AsyncClient(headers=headers, timeout=30, follow_redirects=True) as client:
+            try:
+                resp = await client.get(api_url)
+                resp.raise_for_status()
+                data = resp.json()
+                records = data.get("items", [])
+                logger.info("[%s] Fetched %d items from API", site_name, len(records))
+            except Exception as exc:
+                logger.error("[%s] API fetch failed: %s", site_name, exc)
+                return []
+
+            for rec in records:
+                title = rec.get("title", "")
+                brand = rec.get("brand", "")
+                slug = rec.get("slug", "")
+                source_url = f"{base_site_url}/maschinen/{slug}" if slug else base_site_url + "/maschinen"
+
+                # Get primary image
+                images = rec.get("images", [])
+                image_url = None
+                if images:
+                    primary = next((img for img in images if img.get("isPrimary")), images[0])
+                    image_url = primary.get("url") or None
+
+                # Category as part of description
+                cat = rec.get("category", {})
+                cat_name = cat.get("name", "") if isinstance(cat, dict) else ""
+
+                # Location
+                city = rec.get("city", "")
+                country = rec.get("country", "")
+                loc_parts = [p for p in [city, country] if p]
+                location = ", ".join(loc_parts) or None
+
+                # Price
+                price_val = rec.get("price")
+                currency = rec.get("currency", "EUR")
+                price = f"{price_val} {currency}" if price_val else None
+
+                description = rec.get("description", "") or None
+
+                all_items.append({
+                    "site_name": site_name,
+                    "name": f"{brand} {title}".strip() if brand else title or "Unknown",
+                    "brand": brand or None,
+                    "price": price,
+                    "location": location,
+                    "image_url": image_url,
+                    "description": description,
+                    "source_url": source_url,
+                })
+
+        logger.info("[%s] API scrape complete: %d total items", site_name, len(all_items))
+        return all_items
+
+    async def scrape_mbrmachinery_api(self, config: dict) -> list[dict]:
+        """
+        Scrape mbrmachinery.com via Wix dynamic-pages-router API.
+
+        Intercepts the Wix CMS collection endpoint using Playwright, then
+        parses all machine records from the JSON response.
+        """
+        site_name = config.get("name", "mbrmachinery")
+        start_url = config.get("start_url", "https://www.mbrmachinery.com/second-hand-machines-for-sale")
+        base_site_url = "https://www.mbrmachinery.com"
+
+        self._require_playwright("mbrmachinery Wix API")
+        from playwright.async_api import async_playwright
+        import json as _json
+        import re as _re
+
+        all_items: list[dict] = []
+        dynamic_pages_bodies: list[bytes] = []
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+            )
+            context = await browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent=self._ua.get_random(),
+            )
+
+            async def on_response(resp):
+                if "dynamic-pages-router" in resp.url and "v1/pages" in resp.url:
+                    try:
+                        body = await resp.body()
+                        dynamic_pages_bodies.append(body)
+                    except Exception:
+                        pass
+            context.on("response", on_response)
+
+            page = await context.new_page()
+            try:
+                await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(8000)
+            except Exception as exc:
+                logger.warning("[%s] Page load issue (proceeding): %s", site_name, exc)
+            finally:
+                await context.close()
+                await browser.close()
+
+        logger.info("[%s] Captured %d dynamic-pages API responses", site_name, len(dynamic_pages_bodies))
+
+        for body in dynamic_pages_bodies:
+            try:
+                data = _json.loads(body)
+                items = data.get("result", {}).get("data", {}).get("items", [])
+                logger.info("[%s] Parsing %d items from API response", site_name, len(items))
+
+                for rec in items:
+                    # Machine type is in 'propertieType', brand is oddly stored in 'bedrooms'
+                    machine_type = rec.get("propertieType", "") or rec.get("propertieType1", "") or ""
+                    brand_or_full = rec.get("bedrooms", "") or rec.get("title", "") or ""
+
+                    # The title field often has "BRAND MODEL" combined
+                    title = rec.get("title", "") or f"{brand_or_full} {machine_type}".strip()
+
+                    # Link to detail page
+                    link_path = rec.get("link-properties-title", "")
+                    source_url = base_site_url + link_path if link_path else base_site_url + "/second-hand-machines-for-sale"
+
+                    # Image: convert wix:image:// to static CDN URL
+                    raw_image = rec.get("image", "")
+                    image_url = None
+                    if raw_image:
+                        m = _re.match(r"wix:image://v1/([^/~]+[^/]*?)(?:/|#|$)", raw_image)
+                        if m:
+                            image_url = f"https://static.wixstatic.com/media/{m.group(1)}"
+
+                    # Location from mapLocation
+                    map_loc = rec.get("mapLocation", {}) or {}
+                    city = map_loc.get("city", "")
+                    country_code = map_loc.get("country", "")
+                    loc_parts = [p for p in [city, country_code] if p]
+                    location = ", ".join(loc_parts) or None
+
+                    price = rec.get("price") or rec.get("Price") or None
+                    description = rec.get("description1", "") or None
+
+                    # Build a clean name: prefer full title with brand
+                    name = title.strip() if title.strip() else (brand_or_full + " " + machine_type).strip()
+
+                    all_items.append({
+                        "site_name": site_name,
+                        "name": name or "Unknown",
+                        "brand": brand_or_full.split()[0] if brand_or_full else None,
+                        "price": str(price) if price else None,
+                        "location": location,
+                        "image_url": image_url,
+                        "description": description,
+                        "source_url": source_url,
+                    })
+            except Exception as exc:
+                logger.error("[%s] Failed to parse API response: %s", site_name, exc)
+
+        logger.info("[%s] Wix API scrape complete: %d total items", site_name, len(all_items))
+        return all_items
+
     async def scrape_zatpat_api(self, config: dict) -> list[dict]:
         """
         Scrape zatpatmachines.com via its Supabase REST API.
@@ -879,6 +1053,20 @@ class AdaptiveEngine:
         # ----------------------------------------------------------------
         elif pagination_type == "api_zatpat":
             raw_items = await self.scrape_zatpat_api(config)
+            all_raw.extend(raw_items)
+
+        # ----------------------------------------------------------------
+        # bade-maschinen.de custom JSON REST API scraper
+        # ----------------------------------------------------------------
+        elif pagination_type == "api_bade_maschinen":
+            raw_items = await self.scrape_bade_maschinen_api(config)
+            all_raw.extend(raw_items)
+
+        # ----------------------------------------------------------------
+        # mbrmachinery.com Wix dynamic-pages-router API scraper
+        # ----------------------------------------------------------------
+        elif pagination_type == "api_mbrmachinery":
+            raw_items = await self.scrape_mbrmachinery_api(config)
             all_raw.extend(raw_items)
 
         # ----------------------------------------------------------------
