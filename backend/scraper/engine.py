@@ -357,7 +357,14 @@ class AdaptiveEngine:
         Uses stealth mode to avoid bot detection, scrolls to trigger lazy loading.
         """
         self._require_playwright("dynamic")
+        import os as _os
         from playwright.async_api import async_playwright
+
+        # Honour PLAYWRIGHT_BROWSERS_PATH so Render can find Chromium
+        # in the project directory (no root access required).
+        _browser_path = _os.getenv("PLAYWRIGHT_BROWSERS_PATH")
+        if _browser_path:
+            _os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _browser_path
 
         async with self._playwright_sem:
             async with async_playwright() as pw:
@@ -367,12 +374,10 @@ class AdaptiveEngine:
                         "--no-sandbox",
                         "--disable-setuid-sandbox",
                         "--disable-dev-shm-usage",
-                        "--disable-accelerated-2d-canvas",
-                        "--no-first-run",
-                        "--no-zygote",
                         "--disable-gpu",
+                        "--single-process",
+                        "--no-zygote",
                         "--disable-blink-features=AutomationControlled",
-                        "--disable-infobars",
                         "--window-size=1920,1080",
                     ],
                 )

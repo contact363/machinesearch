@@ -3,11 +3,15 @@ services:
     name: machinesearch-api
     runtime: python
     rootDir: backend
-    buildCommand: pip install -r requirements.txt && playwright install chromium && playwright install-deps chromium
+    buildCommand: pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright playwright install --with-deps chromium
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: PLAYWRIGHT_ENABLED
+        value: "true"
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /opt/render/project/.playwright
       - key: DATABASE_URL
         sync: false
       - key: SECRET_KEY
