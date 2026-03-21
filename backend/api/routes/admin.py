@@ -1165,6 +1165,20 @@ async def scraper_status(
     return {"jobs": running + recent[:20]}
 
 
+@router.get("/scraper/scheduler")
+async def scraper_scheduler_status(
+    _: AdminUser = Depends(_get_current_admin),
+):
+    """Returns the next scheduled auto-scrape time."""
+    try:
+        from api.main import scheduler
+        job = scheduler.get_job("auto_scrape_all")
+        next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
+    except Exception:
+        next_run = None
+    return {"next_run": next_run, "interval_hours": 2}
+
+
 @router.get("/scraper/jobs")
 async def scraper_jobs(
     page: int = Query(1, ge=1),
