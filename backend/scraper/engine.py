@@ -978,6 +978,101 @@ class AdaptiveEngine:
         logger.info("[%s] Supabase API scrape complete: %d total items", site_name, len(all_items))
         return all_items
 
+    async def scrape_ajmeramachines_api(self, config: dict) -> list[dict]:
+        """
+        Scrape ajmeramachines.com:
+          1. Fetch /stocklist → parse category table to get all category names.
+          2. For each category fetch /viewall?list=CategoryName → parse machine table.
+          3. Return flat list of raw item dicts.
+        """
+        site_name = config.get("name", "ajmeramachines")
+        base_url = "https://ajmeramachines.com"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        all_items: list[dict] = []
+
+        async with httpx.AsyncClient(headers=headers, timeout=30, follow_redirects=True) as client:
+            try:
+                resp = await client.get(f"{base_url}/stocklist")
+                resp.raise_for_status()
+            except Exception as exc:
+                logger.error("[%s] Failed to fetch stocklist: %s", site_name, exc)
+                return []
+
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # Parse category links from table: <a href="viewall?list=CategoryName">
+            category_links = []
+            for a in soup.select("a[href]"):
+                href = a.get("href", "")
+                if href.startswith("viewall?list="):
+                    cat_name = href.split("viewall?list=", 1)[1]
+                    if cat_name not in category_links:
+                        category_links.append(cat_name)
+
+            logger.info("[%s] Found %d categories", site_name, len(category_links))
+
+            for cat in category_links:
+                try:
+                    await asyncio.sleep(0.5)
+                    cat_url = f"{base_url}/viewall?list={cat}"
+                    r = await client.get(cat_url)
+                    r.raise_for_status()
+                    cat_soup = BeautifulSoup(r.text, "html.parser")
+                    rows = cat_soup.select("table tr")
+                    for row in rows:
+                        cells = row.select("td")
+                        if len(cells) < 3:
+                            continue
+                        stock_num = cells[0].get_text(strip=True)  # e.g. STK0001966
+                        brand = cells[2].get_text(strip=True) if len(cells) > 2 else ""
+                        model = cells[3].get_text(strip=True) if len(cells) > 3 else ""
+                        year = cells[4].get_text(strip=True) if len(cells) > 4 else ""
+
+                        # Extract machine ID from link href: viewmac?id=1966
+                        link_el = row.select_one("a[href]")
+                        machine_id = ""
+                        detail_url = ""
+                        if link_el:
+                            href = link_el.get("href", "")
+                            if "id=" in href:
+                                machine_id = href.split("id=", 1)[1]
+                                detail_url = f"{base_url}/viewmac?id={machine_id}"
+
+                        # Image: machines/Images/{id}_1.jpg
+                        img_el = row.select_one("img")
+                        image_url = ""
+                        if img_el:
+                            img_src = img_el.get("src", "")
+                            if img_src and not img_src.startswith("http"):
+                                img_src = f"{base_url}/{img_src.lstrip('/')}"
+                            image_url = img_src
+                        elif machine_id:
+                            image_url = f"{base_url}/machines/Images/{machine_id}_1.jpg"
+
+                        name = f"{brand} {model}".strip() if model else model or stock_num
+                        if not name or name == stock_num and not brand:
+                            continue
+
+                        all_items.append({
+                            "name": name,
+                            "brand": brand or None,
+                            "price": None,
+                            "currency": None,
+                            "location": "India",
+                            "image_url": image_url or None,
+                            "source_url": detail_url or cat_url,
+                            "description": f"Stock: {stock_num}" + (f", Year: {year}" if year else ""),
+                            "language": "en",
+                        })
+                except Exception as exc:
+                    logger.warning("[%s] Failed to scrape category '%s': %s", site_name, cat, exc)
+
+        logger.info("[%s] Ajmera scrape complete: %d items", site_name, len(all_items))
+        return all_items
+
     # ------------------------------------------------------------------
     # Pagination helpers
     # ------------------------------------------------------------------
@@ -1067,6 +1162,13 @@ class AdaptiveEngine:
         # ----------------------------------------------------------------
         elif pagination_type == "api_mbrmachinery":
             raw_items = await self.scrape_mbrmachinery_api(config)
+            all_raw.extend(raw_items)
+
+        # ----------------------------------------------------------------
+        # ajmeramachines.com category-based scraper
+        # ----------------------------------------------------------------
+        elif pagination_type == "api_ajmeramachines":
+            raw_items = await self.scrape_ajmeramachines_api(config)
             all_raw.extend(raw_items)
 
         # ----------------------------------------------------------------
