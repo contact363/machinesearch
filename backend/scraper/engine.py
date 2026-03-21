@@ -1364,7 +1364,9 @@ class AdaptiveEngine:
 
     @staticmethod
     def _require_playwright(feature: str) -> None:
-        if not _PLAYWRIGHT_ENABLED:
+        # Check lazily at runtime so .env loaded after module import still works
+        enabled = os.getenv("PLAYWRIGHT_ENABLED", "false").lower() == "true" or _PLAYWRIGHT_ENABLED
+        if not enabled:
             raise RuntimeError(
                 f"'{feature}' requires Playwright, but PLAYWRIGHT_ENABLED=false in your .env.\n"
                 "To enable:\n"

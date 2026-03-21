@@ -1,32 +1,51 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getJobStatus, getJobHistory, startAll, deleteJob } from '../api/adminClient'
+import { getJobStatus, getJobHistory, startAll, deleteJob, getSiteConfigs } from '../api/adminClient'
 import AdminLayout from '../components/AdminLayout'
 import { useToast } from '../components/Toast'
 
-function durationStr(startedAt, finishedAt) {
+function duration(startedAt, finishedAt) {
   if (!startedAt) return '—'
   const end = finishedAt ? new Date(finishedAt) : new Date()
-  const diff = Math.floor((end - new Date(startedAt)) / 1000)
-  if (diff < 60) return `${diff}s`
-  const m = Math.floor(diff / 60)
-  const s = diff % 60
-  return `${m}m ${s}s`
+  const secs = Math.floor((end - new Date(startedAt)) / 1000)
+  if (secs < 60) return `${secs}s`
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return `${m}m ${s > 0 ? ` ${s}s` : ''}`
 }
 
-function StatusPill({ status }) {
-  const map = {
-    running:   'bg-blue-100 text-blue-700',
-    completed: 'bg-green-100 text-green-700',
-    failed:    'bg-red-100 text-red-700',
-    pending:   'bg-yellow-100 text-yellow-700',
-    stuck:     'bg-orange-100 text-orange-700',
+function StatusBadge({ status }) {
+  const styles = {
+    running:   'bg-blue-50 text-blue-700 border-blue-100',
+    completed: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+    failed:    'bg-red-50 text-red-600 border-red-100',
+    pending:   'bg-amber-50 text-amber-700 border-amber-100',
   }
   return (
-    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${map[status] || 'bg-gray-100 text-gray-600'}`}>
-      {status === 'running' && <span className="w-1.5 h-1.5 bg-blue-500 rounded-full mr-1.5 animate-pulse" />}
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border ${styles[status] || 'bg-gray-50 text-gray-600 border-gray-100'}`}>
+      {status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />}
+      {status === 'completed' && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />}
+      {status === 'failed' && <span className="w-1.5 h-1.5 rounded-full bg-red-500" />}
       {status}
     </span>
+  )
+}
+
+function ErrorCell({ msg }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!msg) return <span className="text-gray-300 text-xs">—</span>
+  const short = msg.length > 55 ? msg.slice(0, 55) + '…' : msg
+  return (
+    <div className="max-w-[280px]">
+      <p className="text-xs text-red-500 leading-snug cursor-pointer" onClick={() => setExpanded(e => !e)} title="Click to expand">
+        {expanded ? msg : short}
+      </p>
+      {msg.length > 55 && (
+        <button onClick={() => setExpanded(e => !e)} className="text-[10px] text-red-400 hover:text-red-600 mt-0.5">
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -42,6 +61,11 @@ export default function ScraperJobs() {
     queryKey: ['jobStatus'],
     queryFn: getJobStatus,
     refetchInterval: 8_000,
+  })
+
+  const { data: configsData } = useQuery({
+    queryKey: ['configs'],
+    queryFn: getSiteConfigs,
   })
 
   const hasRunning = (statusData?.jobs || []).some(j => j.status === 'running')
@@ -61,7 +85,7 @@ export default function ScraperJobs() {
     mutationFn: startAll,
     onSuccess: d => {
       qc.invalidateQueries({ queryKey: ['jobStatus'] })
-      toast(`Started ${d.started?.length || 0} jobs`, 'success')
+      toast(`Started scrape for ${d.started?.length || 0} sites`, 'success')
     },
     onError: e => toast(e.response?.data?.detail || 'Start failed', 'error'),
   })
@@ -70,7 +94,7 @@ export default function ScraperJobs() {
     mutationFn: deleteJob,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['jobHistory'] })
-      toast('Job deleted', 'success')
+      toast('Log entry deleted', 'success')
     },
     onError: e => toast(e.response?.data?.detail || 'Delete failed', 'error'),
   })
@@ -78,146 +102,155 @@ export default function ScraperJobs() {
   const isRefreshing = fetchingStatus || fetchingHist
   const handleRefresh = () => { refetchStatus(); refetchHist() }
 
-  const allJobs = statusData?.jobs || []
-  const stuckJobs = allJobs.filter(j => j.status === 'running' && j.started_at && (Date.now() - new Date(j.started_at)) > 60 * 60 * 1000)
-
+  const runningJobs = (statusData?.jobs || []).filter(j => j.status === 'running')
   const jobs = histData?.jobs || []
   const total = histData?.total || 0
   const totalPages = Math.max(1, Math.ceil(total / 25))
-
-  const sites = [...new Set(jobs.map(j => j.site_name).filter(Boolean))].sort()
+  const sites = configsData?.configs?.map(c => c.name) || []
 
   return (
     <AdminLayout>
       <div className="space-y-4">
+
         {/* Header */}
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <h1 className="text-lg font-bold text-gray-900">Crawl Logs</h1>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <p className="text-xs text-gray-400 mt-0.5">{total.toLocaleString()} total log entries</p>
+          </div>
           <div className="flex items-center gap-2">
-            {stuckJobs.length > 0 && (
-              <span className="text-xs bg-orange-100 text-orange-700 px-3 py-1.5 rounded-lg font-medium">
-                {stuckJobs.length} stuck job{stuckJobs.length !== 1 ? 's' : ''}
-              </span>
-            )}
             <button
               onClick={handleRefresh}
               disabled={isRefreshing}
-              className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-60 transition-colors">
-              {isRefreshing
-                ? <span className="w-3.5 h-3.5 border-2 border-gray-400 border-t-gray-700 rounded-full animate-spin" />
-                : <span>↻</span>
-              }
-              Refresh
+              className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-60 transition-colors bg-white"
+            >
+              <svg className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              {isRefreshing ? 'Refreshing…' : 'Refresh'}
             </button>
             <button
               onClick={() => startAllMut.mutate()}
               disabled={startAllMut.isPending}
-              className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2">
-              {startAllMut.isPending
-                ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                : <span>▶</span>}
-              Start All
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-semibold rounded-lg transition-colors"
+            >
+              {startAllMut.isPending ? (
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              )}
+              {startAllMut.isPending ? 'Starting…' : 'Run All Sites'}
             </button>
           </div>
         </div>
 
-        {/* Active jobs banner */}
-        {allJobs.filter(j => j.status === 'running').length > 0 && (
-          <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center gap-3">
-            <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse flex-shrink-0" />
-            <p className="text-sm text-blue-700 font-medium">
-              {allJobs.filter(j => j.status === 'running').length} job(s) currently running:&nbsp;
-              {allJobs.filter(j => j.status === 'running').map(j => j.site_name).join(', ')}
+        {/* Running banner */}
+        {runningJobs.length > 0 && (
+          <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 flex items-center gap-3">
+            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse flex-shrink-0" />
+            <p className="text-xs text-blue-700 font-medium">
+              {runningJobs.length} scrape{runningJobs.length > 1 ? 's' : ''} in progress:&nbsp;
+              <span className="font-semibold">{runningJobs.map(j => j.site_name).join(', ')}</span>
             </p>
           </div>
         )}
 
-        {/* Filters */}
-        <div className="flex flex-wrap items-center gap-2">
-          <select value={siteFilter} onChange={e => { setSiteFilter(e.target.value); setPage(1) }}
-            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
-            <option value="">All Websites</option>
-            {sites.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
-            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
-            <option value="">All Status</option>
-            <option value="running">Running</option>
-            <option value="completed">Completed</option>
-            <option value="failed">Failed</option>
-            <option value="pending">Pending</option>
-          </select>
-          {(siteFilter || statusFilter) && (
-            <button onClick={() => { setSiteFilter(''); setStatusFilter(''); setPage(1) }}
-              className="px-3 py-2 text-sm text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-              Clear filters
-            </button>
-          )}
-        </div>
+        {/* Filters + table */}
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
 
-        {/* Table */}
-        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+          {/* Filter bar */}
+          <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2 flex-wrap">
+            <select
+              value={siteFilter}
+              onChange={e => { setSiteFilter(e.target.value); setPage(1) }}
+              className="text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-600"
+            >
+              <option value="">All Sites</option>
+              {sites.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <select
+              value={statusFilter}
+              onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
+              className="text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-600"
+            >
+              <option value="">All Status</option>
+              <option value="running">Running</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+            </select>
+            {(siteFilter || statusFilter) && (
+              <button
+                onClick={() => { setSiteFilter(''); setStatusFilter(''); setPage(1) }}
+                className="text-xs text-gray-400 hover:text-gray-600 px-2 py-2"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          {/* Table */}
           {isLoading ? (
             <div className="flex justify-center py-16">
-              <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full text-xs">
                 <thead>
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Website</th>
-                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Type</th>
-                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Status</th>
-                    <th className="text-right px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Found</th>
-                    <th className="text-right px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">New</th>
-                    <th className="text-right px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Errors</th>
-                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Started</th>
-                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Duration</th>
-                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Action</th>
+                  <tr className="border-b border-gray-100 bg-gray-50/60">
+                    <th className="text-left px-4 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Site</th>
+                    <th className="text-left px-4 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Status</th>
+                    <th className="text-right px-4 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Found</th>
+                    <th className="text-right px-4 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">New</th>
+                    <th className="text-left px-4 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Started</th>
+                    <th className="text-left px-4 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Duration</th>
+                    <th className="text-left px-4 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Error</th>
+                    <th className="w-10 px-4 py-3" />
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-gray-50">
                   {jobs.map(job => (
-                    <tr key={job.id} className="hover:bg-gray-50 transition-colors">
+                    <tr key={job.id} className="hover:bg-gray-50/60 transition-colors">
                       <td className="px-4 py-3 font-medium text-gray-800">{job.site_name}</td>
-                      <td className="px-4 py-3 text-xs text-gray-500">{job.job_type || 'scrape'}</td>
-                      <td className="px-4 py-3"><StatusPill status={job.status} /></td>
-                      <td className="px-4 py-3 text-right text-gray-700">{job.items_found ?? 0}</td>
-                      <td className="px-4 py-3 text-right text-green-600 font-semibold">{job.items_new ?? 0}</td>
-                      <td className="px-4 py-3 text-right text-red-500">{job.error_count ?? (job.error_message ? 1 : 0)}</td>
-                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
-                        {job.started_at ? new Date(job.started_at).toLocaleString() : '—'}
+                      <td className="px-4 py-3"><StatusBadge status={job.status} /></td>
+                      <td className="px-4 py-3 text-right text-gray-600 tabular-nums">{job.items_found ?? 0}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-emerald-600 tabular-nums">{job.items_new ?? 0}</td>
+                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
+                        {job.started_at
+                          ? new Date(job.started_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                          : '—'}
                       </td>
-                      <td className="px-4 py-3 text-xs text-gray-600 whitespace-nowrap">
-                        {durationStr(job.started_at, job.finished_at)}
-                      </td>
-                      <td className="px-4 py-3 max-w-[220px]">
-                        <div className="flex items-center gap-2">
-                          {job.error_message && (
-                            <span title={job.error_message}
-                              className="inline-block px-2 py-0.5 bg-red-50 text-red-600 text-xs rounded cursor-help break-all line-clamp-2">
-                              {job.error_message.slice(0, 60)}{job.error_message.length > 60 ? '…' : ''}
-                            </span>
-                          )}
-                          {job.status !== 'running' && (
-                            <button
-                              onClick={() => deleteJobMut.mutate(job.id)}
-                              disabled={deleteJobMut.isPending}
-                              className="ml-auto flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded border border-red-200 text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-40"
-                              title="Delete log">
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                              </svg>
-                            </button>
-                          )}
-                        </div>
+                      <td className="px-4 py-3 text-gray-500 tabular-nums">{duration(job.started_at, job.finished_at)}</td>
+                      <td className="px-4 py-3"><ErrorCell msg={job.error_message} /></td>
+                      <td className="px-4 py-3">
+                        {job.status !== 'running' && (
+                          <button
+                            onClick={() => deleteJobMut.mutate(job.id)}
+                            disabled={deleteJobMut.isPending}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors disabled:opacity-40"
+                            title="Delete log"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
                   {jobs.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="text-center py-12 text-gray-400">No crawl logs found</td>
+                      <td colSpan={8} className="text-center py-16">
+                        <svg className="w-8 h-8 mx-auto mb-2 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                        </svg>
+                        <p className="text-gray-400 text-sm">No scrape jobs yet</p>
+                        <p className="text-gray-300 text-xs mt-1">Click "Run All Sites" to start</p>
+                      </td>
                     </tr>
                   )}
                 </tbody>
@@ -227,13 +260,13 @@ export default function ScraperJobs() {
 
           {/* Pagination */}
           {totalPages > 1 && (
-            <div className="flex items-center justify-between px-5 py-3 border-t border-gray-100">
-              <p className="text-sm text-gray-500">{total} total logs · Page {page} of {totalPages}</p>
+            <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
+              <p className="text-xs text-gray-500">{total} logs · page {page} of {totalPages}</p>
               <div className="flex gap-1">
                 <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}
-                  className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors">← Prev</button>
+                  className="px-3 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-40 transition-colors">Prev</button>
                 <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}
-                  className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors">Next →</button>
+                  className="px-3 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-40 transition-colors">Next</button>
               </div>
             </div>
           )}
