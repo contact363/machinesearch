@@ -617,6 +617,195 @@ class AdaptiveEngine:
         return item
 
     # ------------------------------------------------------------------
+    # Specialized API scrapers
+    # ------------------------------------------------------------------
+
+    async def scrape_corelmachines_api(self, config: dict) -> list[dict]:
+        """
+        Scrape corelmachines.com via its JSON API.
+
+        Fetches all subcategories from corelmachine.com/api/subcategory/all,
+        then for each subcategory fetches all products from
+        corelmachine.com/api/product/{slug}.
+        Returns a flat list of raw item dicts ready for parse_item().
+        """
+        site_name = config.get("name", "corel_machines")
+        base_url = "https://www.corelmachines.com"
+        api_base = "https://corelmachine.com/api"
+        headers = self._ua.get_headers(base_url)
+
+        all_items: list[dict] = []
+
+        async with httpx.AsyncClient(headers=headers, timeout=30, follow_redirects=True) as client:
+            # 1. Get all subcategories
+            try:
+                resp = await client.get(f"{api_base}/subcategory/all")
+                resp.raise_for_status()
+                subcategories = resp.json()
+                logger.info("[%s] Got %d subcategories", site_name, len(subcategories))
+            except Exception as exc:
+                logger.error("[%s] Failed to fetch subcategories: %s", site_name, exc)
+                return []
+
+            # 2. For each subcategory, fetch all products
+            for cat in subcategories:
+                slug = cat.get("url", "")
+                cat_title = cat.get("title", slug)
+                if not slug:
+                    continue
+                try:
+                    await self._delay.human_delay()
+                    prod_resp = await client.get(f"{api_base}/product/{slug}")
+                    prod_resp.raise_for_status()
+                    products = prod_resp.json()
+                    if not isinstance(products, list):
+                        continue
+                    logger.info("[%s] Category '%s': %d products", site_name, cat_title, len(products))
+                    for p in products:
+                        prod_url = p.get("url", "")
+                        if prod_url:
+                            source_url = f"{base_url}/usedmachinestocklist/{slug}/{prod_url}"
+                        else:
+                            source_url = f"{base_url}/usedmachinestocklist/{slug}"
+
+                        # Build description from capacity + year
+                        desc_parts = []
+                        if p.get("capacity"):
+                            desc_parts.append(f"Capacity: {p['capacity']}")
+                        if p.get("year_of_construction"):
+                            desc_parts.append(f"Year: {p['year_of_construction']}")
+                        desc_html = p.get("description", "")
+                        # Strip basic HTML tags for description
+                        import re as _re
+                        desc_clean = _re.sub(r"<[^>]+>", " ", desc_html).strip()
+                        if desc_clean:
+                            desc_parts.append(desc_clean)
+
+                        # Get first image
+                        # The API returns "image" as a list of dicts with "image" URL and "is_featured"
+                        raw_image_field = p.get("image") or p.get("images") or []
+                        image_url = ""
+                        if isinstance(raw_image_field, list) and raw_image_field:
+                            # Prefer the featured image, else first
+                            featured = next(
+                                (img for img in raw_image_field if isinstance(img, dict) and img.get("is_featured")),
+                                None,
+                            )
+                            chosen = featured or raw_image_field[0]
+                            if isinstance(chosen, dict):
+                                image_url = chosen.get("image", "") or chosen.get("url", "")
+                            elif isinstance(chosen, str):
+                                image_url = chosen
+                        elif isinstance(raw_image_field, str):
+                            image_url = raw_image_field
+                        if not image_url:
+                            image_url = p.get("thumbnail", "")
+
+                        sub_cat = p.get("sub_category", {}) or {}
+                        brand_name = sub_cat.get("name", "") if isinstance(sub_cat, dict) else ""
+                        # title often has BRAND MODEL format
+                        title = p.get("title", "").strip()
+
+                        all_items.append({
+                            "site_name": site_name,
+                            "name": title or prod_url.replace("-", " ").title(),
+                            "brand": brand_name or (title.split()[0] if title else ""),
+                            "price": None,
+                            "location": "India",
+                            "image_url": image_url or None,
+                            "description": " | ".join(desc_parts) or None,
+                            "source_url": source_url,
+                        })
+                except Exception as exc:
+                    logger.warning("[%s] Category '%s' failed: %s", site_name, cat_title, exc)
+                    continue
+
+        logger.info("[%s] API scrape complete: %d total items", site_name, len(all_items))
+        return all_items
+
+    async def scrape_zatpat_api(self, config: dict) -> list[dict]:
+        """
+        Scrape zatpatmachines.com via its Supabase REST API.
+
+        The anon key and project URL are embedded in the site's JS bundle.
+        Fetches all machines_public records in pages of 1000.
+        """
+        site_name = config.get("name", "zatpat_machines")
+        supabase_url = config.get("supabase_url", "https://aqhgorgilxwrhzleztby.supabase.co")
+        supabase_key = config.get("supabase_key", "")
+        base_site_url = "https://zatpatmachines.com"
+
+        if not supabase_key:
+            logger.error("[%s] No supabase_key in config", site_name)
+            return []
+
+        api_headers = {
+            "apikey": supabase_key,
+            "Authorization": "Bearer " + supabase_key,
+            "Content-Type": "application/json",
+        }
+
+        all_items: list[dict] = []
+        page_size = 1000
+        offset = 0
+
+        async with httpx.AsyncClient(headers=api_headers, timeout=60, follow_redirects=True) as client:
+            while True:
+                url = (
+                    f"{supabase_url}/rest/v1/machines_public"
+                    f"?select=id,model_name,brand_id,price,currency,main_image_url,"
+                    f"model_name,condition,location_country,location_city,"
+                    f"description,source_url,sku_number,year,controller"
+                    f"&status=eq.active"
+                    f"&limit={page_size}&offset={offset}"
+                )
+                try:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    records = resp.json()
+                    if not records:
+                        break
+                    logger.info("[%s] Fetched %d records at offset %d", site_name, len(records), offset)
+
+                    for rec in records:
+                        rec_id = rec.get("id", "")
+                        sku = rec.get("sku_number", "") or rec.get("old_sku", "") or rec_id
+                        machine_name = rec.get("model_name", "") or sku
+                        src_url = rec.get("source_url") or f"{base_site_url}/machines/{rec_id}"
+
+                        loc_parts = []
+                        if rec.get("location_city"):
+                            loc_parts.append(rec["location_city"])
+                        if rec.get("location_country"):
+                            loc_parts.append(rec["location_country"])
+                        location = ", ".join(loc_parts) if loc_parts else None
+
+                        price = rec.get("price")
+                        currency = rec.get("currency", "USD")
+
+                        all_items.append({
+                            "site_name": site_name,
+                            "name": machine_name or "Unknown",
+                            "brand": "",
+                            "price": str(price) + " " + currency if price else None,
+                            "location": location,
+                            "image_url": rec.get("main_image_url") or None,
+                            "description": rec.get("description") or None,
+                            "source_url": src_url,
+                        })
+
+                    if len(records) < page_size:
+                        break
+                    offset += page_size
+                    await self._delay.human_delay()
+                except Exception as exc:
+                    logger.error("[%s] API fetch at offset %d failed: %s", site_name, offset, exc)
+                    break
+
+        logger.info("[%s] Supabase API scrape complete: %d total items", site_name, len(all_items))
+        return all_items
+
+    # ------------------------------------------------------------------
     # Pagination helpers
     # ------------------------------------------------------------------
 
@@ -680,11 +869,25 @@ class AdaptiveEngine:
         seen_keys: set[str] = set()
 
         # ----------------------------------------------------------------
+        # corelmachines multi-category API scraper
+        # ----------------------------------------------------------------
+        if pagination_type == "api_corelmachines":
+            raw_items = await self.scrape_corelmachines_api(config)
+            all_raw.extend(raw_items)
+
+        # ----------------------------------------------------------------
+        # zatpatmachines Supabase API scraper
+        # ----------------------------------------------------------------
+        elif pagination_type == "api_zatpat":
+            raw_items = await self.scrape_zatpat_api(config)
+            all_raw.extend(raw_items)
+
+        # ----------------------------------------------------------------
         # page_param pagination
         # Appends ?{pagination_param}=1, ?{pagination_param}=2 … to
         # config["start_url"] and stops as soon as a page yields 0 items.
         # ----------------------------------------------------------------
-        if pagination_type == "page_param":
+        elif pagination_type == "page_param":
             for page_num in range(1, max_pages + 1):
                 page_url = self._build_page_url(start_url, config, page_num)
                 logger.info("[%s] Scraping page %d: %s", site_name, page_num, page_url)
