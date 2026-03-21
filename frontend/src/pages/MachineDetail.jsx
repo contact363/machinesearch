@@ -10,7 +10,6 @@ export default function MachineDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [imgError, setImgError] = useState(false)
-  const [clicking, setClicking] = useState(false)
 
   const { data: machine, isLoading, error } = useQuery({
     queryKey: ["machine", id],
@@ -25,20 +24,13 @@ export default function MachineDetail() {
     enabled: !!machine?.brand,
   })
 
-  const handleSupplierClick = async () => {
-    if (!machine) return
-    setClicking(true)
-    try {
-      const res = await trackClick(machine.id)
-      if (res?.redirect_url) {
-        window.open(res.redirect_url, "_blank", "noopener,noreferrer")
-      }
-    } catch {
-      if (machine.source_url) {
-        window.open(machine.source_url, "_blank", "noopener,noreferrer")
-      }
-    }
-    setClicking(false)
+  const handleSupplierClick = () => {
+    if (!machine?.source_url) return
+    // Open immediately — must be synchronous from click event
+    // or browsers block it as a popup
+    window.open(machine.source_url, "_blank", "noopener,noreferrer")
+    // Track in background, fire and forget
+    trackClick(machine.id).catch(() => {})
   }
 
   if (isLoading) return (
@@ -137,22 +129,12 @@ export default function MachineDetail() {
 
             <button
               onClick={handleSupplierClick}
-              disabled={clicking}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-semibold py-4 px-6 rounded-xl flex items-center justify-center gap-2 transition-colors text-base mt-auto"
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-6 rounded-xl flex items-center justify-center gap-2 transition-colors text-base mt-auto"
             >
-              {clicking ? (
-                <>
-                  <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
-                  Opening...
-                </>
-              ) : (
-                <>
-                  View on Supplier Website
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                  </svg>
-                </>
-              )}
+              View on Supplier Website
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
             </button>
           </div>
         </div>
