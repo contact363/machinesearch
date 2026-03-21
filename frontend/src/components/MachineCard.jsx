@@ -1,14 +1,60 @@
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useNavigate } from "react-router-dom"
-import { formatPrice, getSiteName } from "../utils/format"
+import { getSiteName } from "../utils/format"
+
+const API_URL = import.meta.env.VITE_API_URL || ""
 
 export default function MachineCard({ machine }) {
   const navigate = useNavigate()
-  const [imgError, setImgError] = useState(false)
+  const [imgState, setImgState] = useState("loading") // "loading" | "loaded" | "error"
+  const [useProxy, setUseProxy] = useState(false)
+  const timerRef = useRef(null)
 
-  const hasImage = machine.image_url &&
-                   !imgError &&
-                   machine.image_url.startsWith("http")
+  const hasValidUrl = !!(machine.image_url && machine.image_url.startsWith("http"))
+
+  useEffect(() => {
+    // Reset when machine changes
+    setImgState(hasValidUrl ? "loading" : "error")
+    setUseProxy(false)
+    clearTimeout(timerRef.current)
+
+    if (!hasValidUrl) return
+
+    // After 5s still loading → try proxy
+    timerRef.current = setTimeout(() => {
+      setUseProxy(true)
+    }, 5000)
+
+    // After 10s proxy also hung → show fallback
+    const fallbackTimer = setTimeout(() => {
+      setImgState(prev => prev === "loading" ? "error" : prev)
+    }, 10000)
+
+    return () => {
+      clearTimeout(timerRef.current)
+      clearTimeout(fallbackTimer)
+    }
+  }, [machine.image_url, hasValidUrl])
+
+  const handleLoad = () => {
+    clearTimeout(timerRef.current)
+    setImgState("loaded")
+  }
+
+  const handleError = () => {
+    clearTimeout(timerRef.current)
+    if (!useProxy) {
+      // Direct load failed → try proxy immediately
+      setUseProxy(true)
+    } else {
+      // Proxy also failed → show fallback
+      setImgState("error")
+    }
+  }
+
+  const imageSrc = useProxy && machine.image_url
+    ? `${API_URL}/api/v1/search/image-proxy?url=${encodeURIComponent(machine.image_url)}`
+    : machine.image_url
 
   return (
     <div
@@ -16,23 +62,30 @@ export default function MachineCard({ machine }) {
       onClick={() => navigate(`/machine/${machine.id}`)}
     >
       {/* Image area */}
-      <div className="w-full h-48 overflow-hidden bg-gray-50">
-        {hasImage ? (
-          <img
-            src={machine.image_url}
-            alt={machine.name}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-            loading="lazy"
-            referrerPolicy="no-referrer"
-            onError={() => setImgError(true)}
-          />
-        ) : (
+      <div className="w-full h-48 overflow-hidden bg-gray-50 relative">
+        {imgState === "error" ? (
           <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100">
             <div className="w-16 h-16 rounded-full bg-white shadow-sm flex items-center justify-center text-2xl font-bold text-gray-300">
               {machine.name?.charAt(0)?.toUpperCase() || "M"}
             </div>
-            <span className="text-xs text-gray-300 mt-2">No image</span>
           </div>
+        ) : (
+          <>
+            {/* Skeleton while loading */}
+            {imgState === "loading" && (
+              <div className="absolute inset-0 bg-gray-100 animate-pulse" />
+            )}
+            <img
+              key={imageSrc}
+              src={imageSrc}
+              alt={machine.name}
+              className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 ${imgState === "loaded" ? "opacity-100" : "opacity-0"}`}
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              onLoad={handleLoad}
+              onError={handleError}
+            />
+          </>
         )}
       </div>
 

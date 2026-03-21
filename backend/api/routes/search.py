@@ -173,3 +173,43 @@ async def track_click(body: dict, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     return {"redirect_url": machine.source_url}
+
+
+@router.get("/image-proxy")
+async def proxy_image(url: str):
+    """Proxy images that block direct browser hotlinking."""
+    import httpx
+    from fastapi.responses import Response
+
+    if not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="Invalid URL")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": url,
+                    "Accept": "image/*,*/*;q=0.8",
+                },
+                timeout=8,
+                follow_redirects=True,
+            )
+            if r.status_code != 200:
+                raise HTTPException(status_code=404, detail="Image not found")
+            content_type = r.headers.get("content-type", "image/jpeg")
+            return Response(
+                content=r.content,
+                media_type=content_type,
+                headers={
+                    "Cache-Control": "public, max-age=86400",
+                    "Access-Control-Allow-Origin": "*",
+                },
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Image timeout")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
