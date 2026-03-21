@@ -781,9 +781,12 @@ class AdaptiveEngine:
                 location = ", ".join(loc_parts) or None
 
                 # Price
-                price_val = rec.get("price")
+                price_raw = rec.get("price")
                 currency = rec.get("currency", "EUR")
-                price = f"{price_val} {currency}" if price_val else None
+                try:
+                    price = float(price_raw) if price_raw is not None else None
+                except (TypeError, ValueError):
+                    price = None
 
                 description = rec.get("description", "") or None
 
@@ -792,6 +795,7 @@ class AdaptiveEngine:
                     "name": f"{brand} {title}".strip() if brand else title or "Unknown",
                     "brand": brand or None,
                     "price": price,
+                    "currency": currency,
                     "location": location,
                     "image_url": image_url,
                     "description": description,
@@ -996,14 +1000,19 @@ class AdaptiveEngine:
                             loc_parts.append(rec["location_country"])
                         location = ", ".join(loc_parts) if loc_parts else None
 
-                        price = rec.get("price")
+                        price_raw = rec.get("price")
                         currency = rec.get("currency", "USD")
+                        try:
+                            price = float(price_raw) if price_raw is not None else None
+                        except (TypeError, ValueError):
+                            price = None
 
                         all_items.append({
                             "site_name": site_name,
                             "name": machine_name or "Unknown",
                             "brand": "",
-                            "price": str(price) + " " + currency if price else None,
+                            "price": price,
+                            "currency": currency,
                             "location": location,
                             "image_url": rec.get("main_image_url") or None,
                             "description": rec.get("description") or None,

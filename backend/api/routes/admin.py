@@ -257,9 +257,16 @@ async def _fetch_html_and_detect(url: str) -> tuple[str, str, str, bool]:
     html = resp.text
     lower = html.lower()
 
-    # Cloudflare challenge detection
-    server = resp.headers.get("server", "").lower()
-    if ("cloudflare" in server or "__cf_chl" in lower) and len(html) < 15000:
+    # Cloudflare *challenge* detection — only block if the page is an actual
+    # challenge/CAPTCHA page, NOT just because Cloudflare is used as a CDN.
+    _cf_challenge = (
+        "__cf_chl" in lower
+        or "cf-browser-verification" in lower
+        or "checking your browser" in lower
+        or "just a moment" in lower
+        or "enable javascript and cookies" in lower
+    )
+    if _cf_challenge and len(html) < 15000:
         return html, "blocked", "static", True
 
     # Framework detection
@@ -271,6 +278,10 @@ async def _fetch_html_and_detect(url: str) -> tuple[str, str, str, bool]:
         return html, "vue", "dynamic", False
     if "wp-content" in lower or "wp-json" in lower:
         return html, "wordpress", "static", False
+
+    # Tiny HTML with no recognisable static content → likely a JS SPA shell
+    if len(html) < 5000:
+        return html, "react_spa", "dynamic", False
 
     return html, "static", "static", False
 
@@ -1024,11 +1035,16 @@ async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_u
                 source_url = (item.get("source_url") or "").strip()
                 if not source_url:
                     continue
+                _price_raw = item.get("price")
+                try:
+                    _price = float(_price_raw) if _price_raw not in (None, "", "None") else None
+                except (TypeError, ValueError):
+                    _price = None
                 stmt = pg_insert(Machine).values(
                     id=uuid.uuid4(),
                     name=(item.get("name") or "Unknown")[:500],
                     brand=(item.get("brand") or None),
-                    price=(item.get("price") or None),
+                    price=_price,
                     currency=(item.get("currency") or "USD"),
                     location=(item.get("location") or None),
                     image_url=(item.get("image_url") or None),
