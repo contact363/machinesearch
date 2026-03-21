@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { formatPrice, getSiteName, truncate } from '../utils/format'
 
@@ -14,6 +15,7 @@ function MachineIcon() {
 
 export default function MachineCard({ machine }) {
   const navigate = useNavigate()
+  const [imgError, setImgError] = useState(false)
   const { id, name, price, currency, brand, location, image_url, site_name } = machine
 
   return (
@@ -23,21 +25,17 @@ export default function MachineCard({ machine }) {
     >
       {/* Image */}
       <div className="aspect-[4/3] bg-gray-100 overflow-hidden flex items-center justify-center">
-        {image_url ? (
+        {image_url && !imgError ? (
           <img
             src={image_url}
             alt={name}
             loading="lazy"
             className="w-full h-full object-cover"
-            onError={e => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex' }}
+            onError={() => setImgError(true)}
           />
-        ) : null}
-        <div
-          className={`w-full h-full items-center justify-center bg-gray-100 ${image_url ? 'hidden' : 'flex'}`}
-          style={{ display: image_url ? 'none' : 'flex' }}
-        >
+        ) : (
           <MachineIcon />
-        </div>
+        )}
       </div>
 
       {/* Body */}

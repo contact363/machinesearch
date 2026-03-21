@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getJobStatus, getJobHistory, startAll } from '../api/adminClient'
+import { getJobStatus, getJobHistory, startAll, deleteJob } from '../api/adminClient'
 import AdminLayout from '../components/AdminLayout'
 import { useToast } from '../components/Toast'
 
@@ -64,6 +64,15 @@ export default function ScraperJobs() {
       toast(`Started ${d.started?.length || 0} jobs`, 'success')
     },
     onError: e => toast(e.response?.data?.detail || 'Start failed', 'error'),
+  })
+
+  const deleteJobMut = useMutation({
+    mutationFn: deleteJob,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['jobHistory'] })
+      toast('Job deleted', 'success')
+    },
+    onError: e => toast(e.response?.data?.detail || 'Delete failed', 'error'),
   })
 
   const isRefreshing = fetchingStatus || fetchingHist
@@ -183,13 +192,26 @@ export default function ScraperJobs() {
                       <td className="px-4 py-3 text-xs text-gray-600 whitespace-nowrap">
                         {durationStr(job.started_at, job.finished_at)}
                       </td>
-                      <td className="px-4 py-3 max-w-[200px]">
-                        {job.error_message && (
-                          <span title={job.error_message}
-                            className="inline-block px-2 py-0.5 bg-red-50 text-red-600 text-xs rounded cursor-help break-all line-clamp-2">
-                            {job.error_message.slice(0, 80)}{job.error_message.length > 80 ? '…' : ''}
-                          </span>
-                        )}
+                      <td className="px-4 py-3 max-w-[220px]">
+                        <div className="flex items-center gap-2">
+                          {job.error_message && (
+                            <span title={job.error_message}
+                              className="inline-block px-2 py-0.5 bg-red-50 text-red-600 text-xs rounded cursor-help break-all line-clamp-2">
+                              {job.error_message.slice(0, 60)}{job.error_message.length > 60 ? '…' : ''}
+                            </span>
+                          )}
+                          {job.status !== 'running' && (
+                            <button
+                              onClick={() => deleteJobMut.mutate(job.id)}
+                              disabled={deleteJobMut.isPending}
+                              className="ml-auto flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded border border-red-200 text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-40"
+                              title="Delete log">
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}

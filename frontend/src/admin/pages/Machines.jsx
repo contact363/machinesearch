@@ -7,6 +7,26 @@ import { useToast } from '../components/Toast'
 
 const PAGE_SIZE = 50
 
+function MachineImage({ url, name }) {
+  const [err, setErr] = useState(false)
+  const initial = (name || '?')[0].toUpperCase()
+  if (!url || err) {
+    return (
+      <div className="w-10 h-10 rounded border bg-gray-100 flex items-center justify-center text-gray-400 text-xs font-semibold">
+        {initial}
+      </div>
+    )
+  }
+  return (
+    <img
+      src={url}
+      alt=""
+      className="w-10 h-10 object-cover rounded border bg-gray-100"
+      onError={() => setErr(true)}
+    />
+  )
+}
+
 export default function Machines() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
@@ -197,12 +217,7 @@ export default function Machines() {
                           className="rounded border-gray-300" />
                       </td>
                       <td className="px-3 py-2">
-                        {m.image_url ? (
-                          <img src={m.image_url} alt="" className="w-10 h-10 object-cover rounded border bg-gray-100"
-                            onError={e => { e.target.style.display = 'none' }} />
-                        ) : (
-                          <div className="w-10 h-10 rounded border bg-gray-100 flex items-center justify-center text-gray-300 text-xs">—</div>
-                        )}
+                        <MachineImage url={m.image_url} name={m.name} />
                       </td>
                       <td className="px-3 py-2 max-w-[200px]">
                         <p className="text-gray-800 truncate text-xs font-medium" title={m.name}>{m.name}</p>

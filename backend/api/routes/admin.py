@@ -1164,6 +1164,23 @@ async def scraper_jobs(
     }
 
 
+@router.delete("/scraper/jobs/{job_id}")
+async def delete_scraper_job(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(_get_current_admin),
+):
+    result = await db.execute(select(ScrapeJob).where(ScrapeJob.id == job_id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status == "running":
+        raise HTTPException(status_code=400, detail="Cannot delete a running job")
+    await db.delete(job)
+    await db.commit()
+    return {"deleted": job_id}
+
+
 # ---------------------------------------------------------------------------
 # Machines
 # ---------------------------------------------------------------------------

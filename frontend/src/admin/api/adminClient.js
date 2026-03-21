@@ -64,6 +64,9 @@ export const getJobStatus = () =>
 export const getJobHistory = params =>
   api.get('/admin/scraper/jobs', { params }).then(r => r.data)
 
+export const deleteJob = id =>
+  api.delete(`/admin/scraper/jobs/${id}`).then(r => r.data)
+
 export const getMachines = params =>
   api.get('/admin/machines', { params }).then(r => r.data)
 
