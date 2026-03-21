@@ -2,13 +2,14 @@
 Search router — full-text and filtered search across machine listings.
 """
 
+import uuid as _uuid
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, func, distinct, or_, text
+from fastapi import APIRouter, Depends, Query, HTTPException
+from sqlalchemy import select, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.db import get_db
-from database.models import Machine
+from database.models import Machine, ClickEvent
 
 router = APIRouter()
 
@@ -111,3 +112,64 @@ async def get_filters(db: AsyncSession = Depends(get_db)):
         "brands": brands,
         "price_range": {"min": price_row.min, "max": price_row.max},
     }
+
+
+@router.get("/machine/{machine_id}")
+async def get_machine(machine_id: str, db: AsyncSession = Depends(get_db)):
+    """Retrieve a single machine by UUID and increment view count."""
+    try:
+        uid = _uuid.UUID(machine_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid machine ID: {machine_id}")
+
+    machine = await db.scalar(select(Machine).where(Machine.id == uid))
+    if not machine:
+        raise HTTPException(status_code=404, detail="Machine not found")
+
+    await db.execute(
+        update(Machine).where(Machine.id == uid).values(view_count=Machine.view_count + 1)
+    )
+    await db.commit()
+
+    return {
+        "id": str(machine.id),
+        "name": machine.name,
+        "brand": machine.brand,
+        "price": machine.price,
+        "currency": machine.currency,
+        "location": machine.location,
+        "image_url": machine.image_url,
+        "description": machine.description,
+        "specs": machine.specs or {},
+        "source_url": machine.source_url,
+        "site_name": machine.site_name,
+        "language": machine.language,
+        "view_count": machine.view_count,
+        "click_count": machine.click_count,
+        "created_at": machine.created_at.isoformat() if machine.created_at else None,
+    }
+
+
+@router.post("/track-click")
+async def track_click(body: dict, db: AsyncSession = Depends(get_db)):
+    """Record a click event and return the machine's source URL."""
+    machine_id = body.get("machine_id")
+    if not machine_id:
+        raise HTTPException(status_code=400, detail="machine_id required")
+
+    try:
+        uid = _uuid.UUID(str(machine_id))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid machine_id")
+
+    machine = await db.scalar(select(Machine).where(Machine.id == uid))
+    if not machine:
+        raise HTTPException(status_code=404, detail="Machine not found")
+
+    await db.execute(
+        update(Machine).where(Machine.id == uid).values(click_count=Machine.click_count + 1)
+    )
+    db.add(ClickEvent(machine_id=uid))
+    await db.commit()
+
+    return {"redirect_url": machine.source_url}
