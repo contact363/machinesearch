@@ -23,11 +23,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 PRODUCTION_CONFIGS = [
     {
-        "name": "zatpat_machines",
+        "name": "zatpatmachines",
         "display_name": "Zatpat Machines",
         "is_active": True,
         "config": {
-            "name": "zatpat_machines",
+            "name": "zatpatmachines",
             "display_name": "Zatpat Machines",
             "start_url": "https://zatpatmachines.com/machines",
             "base_url": "https://zatpatmachines.com",
@@ -85,11 +85,11 @@ PRODUCTION_CONFIGS = [
         },
     },
     {
-        "name": "corel_machines",
+        "name": "corelmachine",
         "display_name": "Corel Machines",
         "is_active": True,
         "config": {
-            "name": "corel_machines",
+            "name": "corelmachine",
             "display_name": "Corel Machines",
             "start_url": "https://www.corelmachines.com/usedmachinestocklist",
             "base_url": "https://www.corelmachines.com",
@@ -114,11 +114,11 @@ PRODUCTION_CONFIGS = [
         },
     },
     {
-        "name": "reble_machinery",
+        "name": "reble-machinery",
         "display_name": "Reble Machinery",
         "is_active": True,
         "config": {
-            "name": "reble_machinery",
+            "name": "reble-machinery",
             "display_name": "Reble Machinery",
             "start_url": "https://www.maschinensucher.de/customerwidget/list/listings?kd=44381",
             "base_url": "https://www.maschinensucher.de",
@@ -167,6 +167,35 @@ PRODUCTION_CONFIGS = [
                 "image": ".maschine-image",
                 "location": "",
                 "detail_link": "",
+                "next_page": "",
+            },
+        },
+    },
+    {
+        "name": "vib-kg",
+        "display_name": "VIB KG",
+        "is_active": True,
+        "config": {
+            "name": "vib-kg",
+            "display_name": "VIB KG",
+            "start_url": "https://vib-kg.com/usedmachines",
+            "base_url": "https://vib-kg.com",
+            "mode": "static",
+            "enabled": True,
+            "pagination_type": "page_param",
+            "pagination_param": "page",
+            "max_pages": 1,
+            "detail_page": False,
+            "proxy_tier": "none",
+            "rate_limit_delay": 2,
+            "language": "de",
+            "selectors": {
+                "listing_container": "li.list-group-item.p-0",
+                "name": "a.machine-index-link",
+                "price": "",
+                "image": ".machine-index-slider-img",
+                "location": "",
+                "detail_link": "a.machine-index-link",
                 "next_page": "",
             },
         },
