@@ -353,8 +353,8 @@ class AdaptiveEngine:
 
     async def scrape_dynamic(self, url: str, config: dict) -> list[dict]:
         """
-        Fetch a listing page with headless Playwright Chromium and extract items.
-        Waits for networkidle before extraction.
+        Playwright scraper for JS-rendered sites.
+        Uses stealth mode to avoid bot detection, scrolls to trigger lazy loading.
         """
         self._require_playwright("dynamic")
         from playwright.async_api import async_playwright
@@ -364,20 +364,60 @@ class AdaptiveEngine:
                 browser = await pw.chromium.launch(
                     headless=True,
                     args=[
-                        "--disable-blink-features=AutomationControlled",
                         "--no-sandbox",
+                        "--disable-setuid-sandbox",
                         "--disable-dev-shm-usage",
+                        "--disable-accelerated-2d-canvas",
+                        "--no-first-run",
+                        "--no-zygote",
                         "--disable-gpu",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-infobars",
+                        "--window-size=1920,1080",
                     ],
                 )
                 context = await browser.new_context(
-                    user_agent=self._ua.get_random(),
-                    viewport={"width": random.randint(1280, 1920), "height": 900},
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    java_script_enabled=True,
+                    ignore_https_errors=True,
+                    extra_http_headers={
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Accept": (
+                            "text/html,application/xhtml+xml,"
+                            "application/xml;q=0.9,image/webp,*/*;q=0.8"
+                        ),
+                    },
                 )
+                # Stealth: hide automation signals
+                await context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                    window.chrome = { runtime: {} };
+                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                """)
                 page = await context.new_page()
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=45_000)
+                    logger.info("[%s] Playwright loading: %s", config.get("name"), url)
+                    # Use domcontentloaded for React/Vite SPAs that never reach networkidle
+                    wait_until = config.get("playwright_wait_until", "domcontentloaded")
+                    await page.goto(url, wait_until=wait_until, timeout=60_000)
+
+                    # Wait for JS framework to render content
+                    await page.wait_for_timeout(5000)
+
+                    # Scroll to trigger lazy loading
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+                    await page.wait_for_timeout(1500)
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await page.wait_for_timeout(1500)
+
                     html = await page.content()
+                    logger.info("[%s] Playwright got %d chars of HTML", config.get("name"), len(html))
                 finally:
                     await context.close()
                     await browser.close()
@@ -475,20 +515,40 @@ class AdaptiveEngine:
             if img_sel:
                 img_node = el.select_one(img_sel)
                 if img_node:
-                    raw["image_url"] = (
+                    image_src = (
                         img_node.get("src")
                         or img_node.get("data-src")
                         or img_node.get("data-lazy-src")
                         or ""
                     )
+                    if image_src and image_src.startswith("/"):
+                        base = page_url.split("/")[0] + "//" + page_url.split("/")[2]
+                        image_src = urljoin(base, image_src)
+                    raw["image_url"] = image_src or None
+            else:
+                # Fallback: first img in container
+                img_node = el.find("img")
+                if img_node:
+                    raw["image_url"] = img_node.get("src") or img_node.get("data-src") or None
 
-            # Detail link
+            # Detail link — three strategies:
+            # 1. explicit selector, 2. container is <a>, 3. first <a> inside
             link_sel = selectors.get("detail_link", "")
             if link_sel:
                 link_node = el.select_one(link_sel)
                 if link_node:
                     href = link_node.get("href", "")
                     raw["source_url"] = urljoin(page_url, href) if href else page_url
+            elif el.name == "a" and el.get("href"):
+                # Container IS the link (common in React/Next.js sites)
+                href = el["href"]
+                raw["source_url"] = urljoin(page_url, href) if href.startswith("/") else href
+            else:
+                # Fallback: first <a> inside the container
+                any_a = el.find("a", href=True)
+                if any_a:
+                    href = any_a.get("href", "")
+                    raw["source_url"] = urljoin(page_url, href) if href.startswith("/") else href
 
             items.append(raw)
 

@@ -33,3 +33,6 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Local test site configs (production configs live in DB, not JSON files)
+backend/site_configs/

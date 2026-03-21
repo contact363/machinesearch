@@ -15,8 +15,9 @@ httpx>=0.27.0
 beautifulsoup4>=4.12.0
 lxml>=5.2.0
 
-# ── Headless browser (optional) ───────────────────────────────────────────────
-# playwright>=1.44.0   # uncomment if PLAYWRIGHT_ENABLED=true
+# ── Headless browser ──────────────────────────────────────────────────────────
+playwright==1.44.0
+greenlet==3.0.3
 
 # ── Scheduling ────────────────────────────────────────────────────────────────
 apscheduler>=3.10.0
