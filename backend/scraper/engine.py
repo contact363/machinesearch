@@ -705,7 +705,21 @@ class AdaptiveEngine:
         return all_items
 
     def _parse_emuk_detail(self, html: str, url: str, base_url: str, site_name: str) -> dict | None:
-        """Parse a single EMUK machine detail page into a raw item dict."""
+        """
+        Parse a single EMUK machine detail page into a raw item dict.
+
+        EMUK HTML structure:
+          <div class="machine-detail-label">Manufacturer</div>
+          <div class="machine-detail-headline"><b>LIEBHERR LC 180</b></div>
+
+          <div class="machine-detail-label">Category</div>
+          <div class="machine-detail-text">Gear cutting machines / Gear Hobbing Machine</div>
+
+          <div class="machine-detail-label">Year of manufacture</div>
+          <div class="machine-detail-text">2012</div>
+
+          All other machine-detail-label rows are technical specs.
+        """
         soup = BeautifulSoup(html, "lxml")
         item: dict = {
             "site_name": site_name,
@@ -713,99 +727,95 @@ class AdaptiveEngine:
             "language": "en",
             "location": "Offenbach, Germany",
             "currency": "EUR",
+            "price": None,
         }
 
         # ── Catalog ID from URL slug ──────────────────────────────────
-        # URL: /en/machine/liebherr-lc-180--1058-24187
-        catalog_match = re.search(r"--(\d{4}-\d{5,})\s*$", url)
+        # e.g. /en/machine/liebherr-lc-180--1058-24187
+        catalog_match = re.search(r"--([A-Za-z0-9]+-[A-Za-z0-9]+)\s*$", url)
         if catalog_match:
             item["catalog_id"] = catalog_match.group(1)
 
-        # ── Parse specs table rows ────────────────────────────────────
-        # EMUK uses a table with <td>Label</td><td>Value</td> pattern
+        # ── Parse machine-detail-label / value pairs ──────────────────
+        _SKIP_LABELS = {"delivery time", "price", "lieferzeit", "preis"}
+        _META_LABELS = {
+            "manufacturer":      "manufacturer_raw",
+            "category":          "machine_type",
+            "year of manufacture": "year_of_manufacture",
+            "storage location":  "location",
+            "country of origin": "country_of_origin",
+        }
+
         specs: dict = {}
-        tables = soup.find_all("table")
-        for table in tables:
-            rows = table.find_all("tr")
-            for row in rows:
-                cells = row.find_all("td")
-                if len(cells) >= 2:
-                    key = cells[0].get_text(strip=True).rstrip(":")
-                    val = cells[1].get_text(strip=True)
-                    if key and val:
-                        specs[key] = val
+        for label_div in soup.find_all("div", class_="machine-detail-label"):
+            label_text = label_div.get_text(strip=True)
+            label_lower = label_text.lower()
 
-        # ── Extract known fields from specs dict ──────────────────────
-        field_map = {
-            "Manufacturer": "brand",
-            "Model": "model_name",
-            "Year of manufacture": "year_of_manufacture",
-            "Category": "machine_type",
-            "Storage location": "location",
-            "Country of origin": "country_of_origin",
-            "Delivery time": None,   # ignored
-        }
-        for label, field in field_map.items():
-            if label in specs and field:
-                val = specs.pop(label, "")
-                if field == "year_of_manufacture":
-                    try:
-                        item[field] = int(val)
-                    except ValueError:
-                        pass
-                else:
-                    item[field] = val
-            elif label in specs:
-                specs.pop(label, None)
+            # Value is the next sibling div (headline or text class)
+            val_div = label_div.find_next_sibling("div")
+            if not val_div:
+                continue
+            val_text = val_div.get_text(strip=True)
+            if not val_text:
+                continue
 
-        # Also try lowercase / alternate labels
-        for key in list(specs.keys()):
-            low = key.lower()
-            if "manufacturer" in low or "hersteller" in low:
-                item.setdefault("brand", specs.pop(key))
-            elif "model" in low and "brand" not in low:
-                item.setdefault("model_name", specs.pop(key))
-            elif "year" in low or "baujahr" in low:
-                try:
-                    item.setdefault("year_of_manufacture", int(re.search(r"\d{4}", specs[key]).group()))
-                except Exception:
-                    pass
-                specs.pop(key, None)
-            elif "category" in low or "kategorie" in low:
-                item.setdefault("machine_type", specs.pop(key))
-            elif "country" in low or "herkunft" in low:
-                item.setdefault("country_of_origin", specs.pop(key))
-            elif "location" in low or "lagerort" in low or "storage" in low:
-                item.setdefault("location", specs.pop(key))
+            if any(skip in label_lower for skip in _SKIP_LABELS):
+                continue
 
-        # Remaining specs → store as specs JSON (exclude delivery/price noise)
-        skip_words = {"price", "delivery", "lieferzeit", "preis"}
-        item["specs"] = {
-            k: v for k, v in specs.items()
-            if not any(w in k.lower() for w in skip_words)
-        }
+            mapped = None
+            for key, field in _META_LABELS.items():
+                if key in label_lower:
+                    mapped = field
+                    break
 
-        # ── Name: "<Brand> <Model>" ───────────────────────────────────
-        brand = item.get("brand", "")
-        model = item.get("model_name", "")
-        if brand and model:
-            item["name"] = f"{brand} {model}"
-        elif brand:
-            item["name"] = brand
-        else:
-            # Fallback: h1 or page title
-            h1 = soup.find("h1")
-            if h1:
-                item["name"] = h1.get_text(strip=True)
+            if mapped:
+                item[mapped] = val_text
             else:
-                title = soup.find("title")
-                item["name"] = (title.get_text(strip=True) if title else url.split("/")[-1]) or "Unknown"
+                # Technical spec row
+                specs[label_text] = val_text
 
-        # ── Images ───────────────────────────────────────────────────
+        item["specs"] = specs if specs else None
+
+        # ── Brand + Model from manufacturer_raw ───────────────────────
+        # "LIEBHERR LC 180" → brand="LIEBHERR", name="LIEBHERR LC 180"
+        mfr_raw = item.pop("manufacturer_raw", "") or ""
+        if mfr_raw:
+            item["name"] = mfr_raw
+            # First word is the brand
+            parts = mfr_raw.split()
+            item["brand"] = parts[0].upper() if parts else mfr_raw
+        else:
+            # Fallback: page title  "VDF Boehringer DUS 560 - EMUK GmbH ..."
+            title_el = soup.find("title")
+            if title_el:
+                raw_title = title_el.get_text(strip=True)
+                # Strip trailing " - EMUK GmbH Werkzeugmaschinen"
+                name = re.sub(r"\s*-\s*EMUK GmbH.*$", "", raw_title, flags=re.IGNORECASE).strip()
+                item["name"] = name or raw_title
+                parts = name.split()
+                item["brand"] = parts[0].upper() if parts else ""
+            else:
+                item["name"] = url.rstrip("/").split("/")[-1].replace("-", " ").title()
+
+        # ── Year: extract 4-digit year ────────────────────────────────
+        year_raw = item.get("year_of_manufacture", "")
+        if year_raw:
+            m = re.search(r"\b(19|20)\d{2}\b", str(year_raw))
+            item["year_of_manufacture"] = int(m.group()) if m else None
+        else:
+            item["year_of_manufacture"] = None
+
+        # ── machine_type: strip trailing slash details ─────────────────
+        if item.get("machine_type"):
+            # "Gear cutting machines / Gear Hobbing Machine - Vertical"
+            # Keep full string as machine_type
+            item["machine_type"] = item["machine_type"].strip()
+
+        # ── Images: only /uploads/ paths ─────────────────────────────
         images: list[str] = []
         for img in soup.find_all("img"):
             src = img.get("src") or img.get("data-src") or ""
-            if "/uploads/" in src or "emuk" in src:
+            if "/uploads/" in src:
                 full = urljoin(base_url, src) if src.startswith("/") else src
                 if full not in images:
                     images.append(full)
@@ -815,27 +825,23 @@ class AdaptiveEngine:
                 item["extra_images"] = images[1:]
 
         # ── Video URL ────────────────────────────────────────────────
-        video_iframe = soup.find("iframe", src=re.compile(r"youtube|vimeo"))
+        video_iframe = soup.find("iframe", src=re.compile(r"youtube|vimeo", re.I))
         if video_iframe:
             item["video_url"] = video_iframe.get("src", "")
         else:
-            yt_link = soup.find("a", href=re.compile(r"youtube\.com|youtu\.be"))
-            if yt_link:
-                item["video_url"] = yt_link.get("href", "")
+            yt = soup.find("a", href=re.compile(r"youtube\.com|youtu\.be", re.I))
+            if yt:
+                item["video_url"] = yt.get("href", "")
 
-        # ── Description: collect meaningful paragraphs ────────────────
+        # ── Description: meaningful text blocks ───────────────────────
         desc_parts = []
         for p in soup.find_all("p"):
             txt = p.get_text(strip=True)
-            if txt and len(txt) > 20:
+            if txt and len(txt) > 30:
                 desc_parts.append(txt)
         if desc_parts:
-            item["description"] = " ".join(desc_parts[:5])
+            item["description"] = " ".join(desc_parts[:4])
 
-        # ── Price: always "Price on Request" for EMUK ────────────────
-        item["price"] = None
-
-        # Validate minimum required fields
         if not item.get("name") or not item.get("source_url"):
             return None
 
