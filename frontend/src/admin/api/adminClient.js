@@ -85,6 +85,18 @@ export const deleteBySite = site_name =>
 export const clearAllMachines = () =>
   api.delete('/admin/machines/clear-all').then(r => r.data)
 
+export const editMachine = (id, data) =>
+  api.put(`/admin/machines/${id}`, data).then(r => r.data)
+
+export const trainMachine = (id, data) =>
+  api.post(`/admin/machines/${id}/train`, data).then(r => r.data)
+
+export const getMachineTypes = () =>
+  api.get('/admin/machine-types').then(r => r.data)
+
+export const getMachineBrands = () =>
+  api.get('/admin/machine-brands').then(r => r.data)
+
 export const getClickAnalytics = params =>
   api.get('/admin/analytics/clicks', { params }).then(r => r.data)
 

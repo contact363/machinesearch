@@ -626,6 +626,222 @@ class AdaptiveEngine:
         return item
 
     # ------------------------------------------------------------------
+    # EMUK scraper  — deep scrape of emuk.de/en/stock
+    # ------------------------------------------------------------------
+
+    async def scrape_emuk(self, config: dict) -> list[dict]:
+        """
+        Full deep scraper for EMUK Werkzeugmaschinen (emuk.de).
+
+        Steps:
+        1. Paginate /en/stock?page=N to collect all machine detail URLs
+        2. Visit each detail page
+        3. Parse all data: brand, model, year, category, specs table,
+           catalog_id, country, location, multiple images, video_url
+        Returns raw item dicts (with extra EMUK-specific keys).
+        """
+        site_name = config.get("name", "emuk")
+        base_url = "https://emuk.de"
+        start_url = "https://emuk.de/en/stock"
+        max_pages = config.get("max_pages", 30)
+        headers = self._ua.get_headers(base_url)
+
+        # ── Step 1: Collect all detail page URLs ──────────────────────
+        detail_urls: list[str] = []
+        seen_listing: set[str] = set()
+
+        async with httpx.AsyncClient(
+            headers=headers, timeout=30, follow_redirects=True
+        ) as client:
+            for page_num in range(1, max_pages + 1):
+                page_url = f"{start_url}?page={page_num}"
+                logger.info("[emuk] Listing page %d: %s", page_num, page_url)
+                try:
+                    resp = await client.get(page_url)
+                    resp.raise_for_status()
+                except Exception as exc:
+                    logger.warning("[emuk] Listing page %d failed: %s", page_num, exc)
+                    break
+
+                soup = BeautifulSoup(resp.text, "lxml")
+                links = soup.find_all("a", href=re.compile(r"/en/machine/"))
+                page_urls = []
+                for a in links:
+                    href = a.get("href", "")
+                    full_url = urljoin(base_url, href)
+                    if full_url not in seen_listing:
+                        seen_listing.add(full_url)
+                        page_urls.append(full_url)
+
+                if not page_urls:
+                    logger.info("[emuk] No machine links on page %d — stopping.", page_num)
+                    break
+
+                detail_urls.extend(page_urls)
+                logger.info("[emuk] Page %d: found %d machine links (total %d)", page_num, len(page_urls), len(detail_urls))
+                await self._delay.page_delay()
+
+        logger.info("[emuk] Total machine detail pages to scrape: %d", len(detail_urls))
+
+        # ── Step 2: Scrape each detail page ───────────────────────────
+        all_items: list[dict] = []
+
+        async with httpx.AsyncClient(
+            headers=headers, timeout=30, follow_redirects=True
+        ) as client:
+            for detail_url in detail_urls:
+                try:
+                    await self._delay.human_delay()
+                    resp = await client.get(detail_url)
+                    resp.raise_for_status()
+                    item = self._parse_emuk_detail(resp.text, detail_url, base_url, site_name)
+                    if item:
+                        all_items.append(item)
+                except Exception as exc:
+                    logger.warning("[emuk] Detail page failed %s: %s", detail_url, exc)
+                    continue
+
+        logger.info("[emuk] Scraped %d machine detail pages", len(all_items))
+        return all_items
+
+    def _parse_emuk_detail(self, html: str, url: str, base_url: str, site_name: str) -> dict | None:
+        """Parse a single EMUK machine detail page into a raw item dict."""
+        soup = BeautifulSoup(html, "lxml")
+        item: dict = {
+            "site_name": site_name,
+            "source_url": url,
+            "language": "en",
+            "location": "Offenbach, Germany",
+            "currency": "EUR",
+        }
+
+        # ── Catalog ID from URL slug ──────────────────────────────────
+        # URL: /en/machine/liebherr-lc-180--1058-24187
+        catalog_match = re.search(r"--(\d{4}-\d{5,})\s*$", url)
+        if catalog_match:
+            item["catalog_id"] = catalog_match.group(1)
+
+        # ── Parse specs table rows ────────────────────────────────────
+        # EMUK uses a table with <td>Label</td><td>Value</td> pattern
+        specs: dict = {}
+        tables = soup.find_all("table")
+        for table in tables:
+            rows = table.find_all("tr")
+            for row in rows:
+                cells = row.find_all("td")
+                if len(cells) >= 2:
+                    key = cells[0].get_text(strip=True).rstrip(":")
+                    val = cells[1].get_text(strip=True)
+                    if key and val:
+                        specs[key] = val
+
+        # ── Extract known fields from specs dict ──────────────────────
+        field_map = {
+            "Manufacturer": "brand",
+            "Model": "model_name",
+            "Year of manufacture": "year_of_manufacture",
+            "Category": "machine_type",
+            "Storage location": "location",
+            "Country of origin": "country_of_origin",
+            "Delivery time": None,   # ignored
+        }
+        for label, field in field_map.items():
+            if label in specs and field:
+                val = specs.pop(label, "")
+                if field == "year_of_manufacture":
+                    try:
+                        item[field] = int(val)
+                    except ValueError:
+                        pass
+                else:
+                    item[field] = val
+            elif label in specs:
+                specs.pop(label, None)
+
+        # Also try lowercase / alternate labels
+        for key in list(specs.keys()):
+            low = key.lower()
+            if "manufacturer" in low or "hersteller" in low:
+                item.setdefault("brand", specs.pop(key))
+            elif "model" in low and "brand" not in low:
+                item.setdefault("model_name", specs.pop(key))
+            elif "year" in low or "baujahr" in low:
+                try:
+                    item.setdefault("year_of_manufacture", int(re.search(r"\d{4}", specs[key]).group()))
+                except Exception:
+                    pass
+                specs.pop(key, None)
+            elif "category" in low or "kategorie" in low:
+                item.setdefault("machine_type", specs.pop(key))
+            elif "country" in low or "herkunft" in low:
+                item.setdefault("country_of_origin", specs.pop(key))
+            elif "location" in low or "lagerort" in low or "storage" in low:
+                item.setdefault("location", specs.pop(key))
+
+        # Remaining specs → store as specs JSON (exclude delivery/price noise)
+        skip_words = {"price", "delivery", "lieferzeit", "preis"}
+        item["specs"] = {
+            k: v for k, v in specs.items()
+            if not any(w in k.lower() for w in skip_words)
+        }
+
+        # ── Name: "<Brand> <Model>" ───────────────────────────────────
+        brand = item.get("brand", "")
+        model = item.get("model_name", "")
+        if brand and model:
+            item["name"] = f"{brand} {model}"
+        elif brand:
+            item["name"] = brand
+        else:
+            # Fallback: h1 or page title
+            h1 = soup.find("h1")
+            if h1:
+                item["name"] = h1.get_text(strip=True)
+            else:
+                title = soup.find("title")
+                item["name"] = (title.get_text(strip=True) if title else url.split("/")[-1]) or "Unknown"
+
+        # ── Images ───────────────────────────────────────────────────
+        images: list[str] = []
+        for img in soup.find_all("img"):
+            src = img.get("src") or img.get("data-src") or ""
+            if "/uploads/" in src or "emuk" in src:
+                full = urljoin(base_url, src) if src.startswith("/") else src
+                if full not in images:
+                    images.append(full)
+        if images:
+            item["image_url"] = images[0]
+            if len(images) > 1:
+                item["extra_images"] = images[1:]
+
+        # ── Video URL ────────────────────────────────────────────────
+        video_iframe = soup.find("iframe", src=re.compile(r"youtube|vimeo"))
+        if video_iframe:
+            item["video_url"] = video_iframe.get("src", "")
+        else:
+            yt_link = soup.find("a", href=re.compile(r"youtube\.com|youtu\.be"))
+            if yt_link:
+                item["video_url"] = yt_link.get("href", "")
+
+        # ── Description: collect meaningful paragraphs ────────────────
+        desc_parts = []
+        for p in soup.find_all("p"):
+            txt = p.get_text(strip=True)
+            if txt and len(txt) > 20:
+                desc_parts.append(txt)
+        if desc_parts:
+            item["description"] = " ".join(desc_parts[:5])
+
+        # ── Price: always "Price on Request" for EMUK ────────────────
+        item["price"] = None
+
+        # Validate minimum required fields
+        if not item.get("name") or not item.get("source_url"):
+            return None
+
+        return item
+
+    # ------------------------------------------------------------------
     # Specialized API scrapers
     # ------------------------------------------------------------------
 
@@ -1189,9 +1405,16 @@ class AdaptiveEngine:
         seen_keys: set[str] = set()
 
         # ----------------------------------------------------------------
+        # EMUK deep scraper (listing pages + each detail page)
+        # ----------------------------------------------------------------
+        if pagination_type == "api_emuk":
+            raw_items = await self.scrape_emuk(config)
+            all_raw.extend(raw_items)
+
+        # ----------------------------------------------------------------
         # corelmachines multi-category API scraper
         # ----------------------------------------------------------------
-        if pagination_type == "api_corelmachines":
+        elif pagination_type == "api_corelmachines":
             raw_items = await self.scrape_corelmachines_api(config)
             all_raw.extend(raw_items)
 

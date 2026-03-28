@@ -43,7 +43,7 @@ from sqlalchemy import select, func, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.db import get_db
-from database.models import AdminUser, ClickEvent, Machine, ScrapeJob, SearchEvent, SiteConfig
+from database.models import AdminUser, ClickEvent, Machine, MachineBrand, MachineType, ScrapeJob, SearchEvent, SiteConfig
 
 router = APIRouter()
 
@@ -1040,6 +1040,11 @@ async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_u
                     _price = float(_price_raw) if _price_raw not in (None, "", "None") else None
                 except (TypeError, ValueError):
                     _price = None
+                _year = item.get("year_of_manufacture")
+                try:
+                    _year = int(_year) if _year else None
+                except (TypeError, ValueError):
+                    _year = None
                 stmt = pg_insert(Machine).values(
                     id=uuid.uuid4(),
                     name=(item.get("name") or "Unknown")[:500],
@@ -1053,6 +1058,14 @@ async def _run_scrape_background(site_name: str, config: dict, job_id: str, db_u
                     source_url=source_url,
                     site_name=site_name,
                     language=(item.get("language") or "en"),
+                    machine_type=(item.get("machine_type") or None),
+                    year_of_manufacture=_year,
+                    condition=(item.get("condition") or None),
+                    video_url=(item.get("video_url") or None),
+                    catalog_id=(item.get("catalog_id") or None),
+                    country_of_origin=(item.get("country_of_origin") or None),
+                    extra_images=(item.get("extra_images") or None),
+                    is_trained=False,
                     view_count=0,
                     click_count=0,
                     created_at=datetime.now(timezone.utc),
@@ -1292,6 +1305,17 @@ async def list_machines(
             "view_count": m.view_count,
             "click_count": m.click_count,
             "created_at": m.created_at.isoformat() if m.created_at else None,
+            # Extended fields
+            "machine_type": getattr(m, "machine_type", None),
+            "year_of_manufacture": getattr(m, "year_of_manufacture", None),
+            "condition": getattr(m, "condition", None),
+            "video_url": getattr(m, "video_url", None),
+            "catalog_id": getattr(m, "catalog_id", None),
+            "country_of_origin": getattr(m, "country_of_origin", None),
+            "extra_images": getattr(m, "extra_images", None),
+            "is_trained": getattr(m, "is_trained", False),
+            "type_id": str(m.type_id) if getattr(m, "type_id", None) else None,
+            "brand_id": str(m.brand_id) if getattr(m, "brand_id", None) else None,
         }
 
     return {
@@ -1314,6 +1338,149 @@ async def toggle_featured(
     m.is_featured = not getattr(m, "is_featured", False)
     await db.commit()
     return {"id": machine_id, "is_featured": m.is_featured}
+
+
+@router.put("/machines/{machine_id}")
+async def edit_machine(
+    machine_id: str,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(_get_current_admin),
+):
+    """Edit any field of a machine record."""
+    m = await db.scalar(select(Machine).where(Machine.id == uuid.UUID(machine_id)))
+    if not m:
+        raise HTTPException(status_code=404, detail="Machine not found")
+
+    editable = [
+        "name", "brand", "price", "currency", "location", "image_url",
+        "description", "specs", "language", "machine_type", "year_of_manufacture",
+        "condition", "video_url", "catalog_id", "country_of_origin",
+    ]
+    for field in editable:
+        if field in body:
+            val = body[field]
+            if field == "price":
+                try:
+                    val = float(val) if val not in (None, "") else None
+                except (TypeError, ValueError):
+                    val = None
+            if field == "year_of_manufacture":
+                try:
+                    val = int(val) if val not in (None, "") else None
+                except (TypeError, ValueError):
+                    val = None
+            setattr(m, field, val)
+
+    m.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"updated": machine_id}
+
+
+@router.post("/machines/{machine_id}/train")
+async def train_machine(
+    machine_id: str,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(_get_current_admin),
+):
+    """
+    Train / classify a machine: match it to a MachineType and MachineBrand.
+
+    The body can supply:
+      - type_name: str  (exact or fuzzy match against machine_types.name / aliases)
+      - brand_name: str (exact or fuzzy match against machine_brands.name / aliases)
+
+    If no match exists in the registry, a new record is created automatically.
+    Sets is_trained=True on the machine.
+    """
+    m = await db.scalar(select(Machine).where(Machine.id == uuid.UUID(machine_id)))
+    if not m:
+        raise HTTPException(status_code=404, detail="Machine not found")
+
+    matched_type = None
+    matched_brand = None
+
+    # ── Match / create MachineType ────────────────────────────────────────
+    type_name = (body.get("type_name") or m.machine_type or "").strip()
+    if type_name:
+        # Exact match first
+        mt = await db.scalar(select(MachineType).where(MachineType.name.ilike(type_name)))
+        if not mt:
+            # Check aliases (JSON list contains search)
+            all_types = (await db.execute(select(MachineType))).scalars().all()
+            for t in all_types:
+                aliases = t.aliases or []
+                if any(type_name.lower() == a.lower() for a in aliases):
+                    mt = t
+                    break
+        if not mt:
+            # Create new type
+            mt = MachineType(name=type_name.title(), aliases=[])
+            db.add(mt)
+            await db.flush()
+        matched_type = mt
+
+    # ── Match / create MachineBrand ───────────────────────────────────────
+    brand_name = (body.get("brand_name") or m.brand or "").strip()
+    if brand_name:
+        mb = await db.scalar(select(MachineBrand).where(MachineBrand.name.ilike(brand_name)))
+        if not mb:
+            all_brands = (await db.execute(select(MachineBrand))).scalars().all()
+            for b in all_brands:
+                aliases = b.aliases or []
+                if any(brand_name.lower() == a.lower() for a in aliases):
+                    mb = b
+                    break
+        if not mb:
+            mb = MachineBrand(name=brand_name.upper(), aliases=[])
+            db.add(mb)
+            await db.flush()
+        matched_brand = mb
+
+    # ── Update machine ────────────────────────────────────────────────────
+    if matched_type:
+        m.type_id = matched_type.id
+        m.machine_type = matched_type.name
+    if matched_brand:
+        m.brand_id = matched_brand.id
+        m.brand = matched_brand.name
+    if body.get("type_name"):
+        m.machine_type = body["type_name"]
+
+    m.is_trained = True
+    m.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return {
+        "trained": machine_id,
+        "matched_type": matched_type.name if matched_type else None,
+        "matched_brand": matched_brand.name if matched_brand else None,
+        "type_id": str(matched_type.id) if matched_type else None,
+        "brand_id": str(matched_brand.id) if matched_brand else None,
+    }
+
+
+@router.get("/machine-types")
+async def list_machine_types(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(_get_current_admin),
+):
+    """Return all machine types for autocomplete in the edit modal."""
+    result = await db.execute(select(MachineType).order_by(MachineType.name))
+    types = result.scalars().all()
+    return {"types": [{"id": str(t.id), "name": t.name, "aliases": t.aliases or []} for t in types]}
+
+
+@router.get("/machine-brands")
+async def list_machine_brands(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(_get_current_admin),
+):
+    """Return all machine brands for autocomplete in the edit modal."""
+    result = await db.execute(select(MachineBrand).order_by(MachineBrand.name))
+    brands = result.scalars().all()
+    return {"brands": [{"id": str(b.id), "name": b.name, "aliases": b.aliases or []} for b in brands]}
 
 
 @router.delete("/machines/clear-all")

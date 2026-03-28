@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getMachines, deleteMachine, deleteBySite,
   getSiteConfigs, toggleFeatured,
+  editMachine, trainMachine, getMachineTypes, getMachineBrands,
 } from '../api/adminClient'
 import AdminLayout from '../components/AdminLayout'
 import ConfirmModal from '../components/ConfirmModal'
@@ -10,6 +11,9 @@ import { useToast } from '../components/Toast'
 
 const PAGE_SIZE = 50
 
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
 function MachineImage({ url, name }) {
   const [err, setErr] = useState(false)
   const initial = (name || '?')[0].toUpperCase()
@@ -48,6 +52,371 @@ function StarButton({ active, onClick, loading }) {
   )
 }
 
+function TrainedBadge({ trained }) {
+  if (trained) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-[10px] font-semibold border border-green-200">
+        <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20">
+          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+        </svg>
+        Trained
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-gray-100 text-gray-400 text-[10px] font-medium border border-gray-200">
+      Untrained
+    </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Edit + Train Modal
+// ---------------------------------------------------------------------------
+function EditMachineModal({ machine, onClose, onSaved }) {
+  const toast = useToast()
+  const qc = useQueryClient()
+
+  const [form, setForm] = useState({
+    name: machine.name || '',
+    brand: machine.brand || '',
+    machine_type: machine.machine_type || '',
+    year_of_manufacture: machine.year_of_manufacture || '',
+    condition: machine.condition || '',
+    location: machine.location || '',
+    country_of_origin: machine.country_of_origin || '',
+    catalog_id: machine.catalog_id || '',
+    description: machine.description || '',
+    image_url: machine.image_url || '',
+    video_url: machine.video_url || '',
+    price: machine.price || '',
+    currency: machine.currency || 'EUR',
+    specs: machine.specs ? JSON.stringify(machine.specs, null, 2) : '',
+  })
+
+  const [trainType, setTrainType] = useState(machine.machine_type || '')
+  const [trainBrand, setTrainBrand] = useState(machine.brand || '')
+  const [saving, setSaving] = useState(false)
+  const [training, setTraining] = useState(false)
+  const [trainResult, setTrainResult] = useState(null)
+  const [tab, setTab] = useState('edit') // 'edit' | 'train'
+
+  const { data: typesData } = useQuery({ queryKey: ['machine-types'], queryFn: getMachineTypes })
+  const { data: brandsData } = useQuery({ queryKey: ['machine-brands'], queryFn: getMachineBrands })
+
+  const types = typesData?.types || []
+  const brands = brandsData?.brands || []
+
+  const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      let specsObj = null
+      if (form.specs.trim()) {
+        try { specsObj = JSON.parse(form.specs) } catch { specsObj = null }
+      }
+      await editMachine(machine.id, {
+        ...form,
+        specs: specsObj,
+        price: form.price === '' ? null : Number(form.price),
+        year_of_manufacture: form.year_of_manufacture === '' ? null : Number(form.year_of_manufacture),
+      })
+      toast('Machine saved', 'success')
+      qc.invalidateQueries({ queryKey: ['machines'] })
+      onSaved()
+    } catch {
+      toast('Save failed', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleTrain = async () => {
+    setTraining(true)
+    setTrainResult(null)
+    try {
+      const res = await trainMachine(machine.id, {
+        type_name: trainType.trim(),
+        brand_name: trainBrand.trim(),
+      })
+      setTrainResult(res)
+      toast(`Trained → ${res.matched_type || '?'} / ${res.matched_brand || '?'}`, 'success')
+      qc.invalidateQueries({ queryKey: ['machines'] })
+    } catch {
+      toast('Training failed', 'error')
+    } finally {
+      setTraining(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <div>
+            <h2 className="text-sm font-bold text-gray-900">Edit Machine</h2>
+            <p className="text-xs text-gray-400 mt-0.5 font-mono truncate max-w-xs">{machine.id}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <TrainedBadge trained={machine.is_trained} />
+            <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-gray-100 px-6">
+          {['edit', 'train'].map(t => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-2.5 text-xs font-semibold capitalize transition-colors border-b-2 -mb-px ${
+                tab === t
+                  ? 'text-blue-600 border-blue-600'
+                  : 'text-gray-400 border-transparent hover:text-gray-600'
+              }`}
+            >
+              {t === 'train' ? 'Train / Classify' : 'Edit Fields'}
+            </button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 px-6 py-4">
+
+          {tab === 'edit' && (
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Name" colSpan={2}>
+                <input value={form.name} onChange={e => set('name', e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+
+              <Field label="Brand">
+                <input value={form.brand} onChange={e => set('brand', e.target.value)}
+                  list="brand-list"
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <datalist id="brand-list">
+                  {brands.map(b => <option key={b.id} value={b.name} />)}
+                </datalist>
+              </Field>
+
+              <Field label="Machine Type">
+                <input value={form.machine_type} onChange={e => set('machine_type', e.target.value)}
+                  list="type-list"
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <datalist id="type-list">
+                  {types.map(t => <option key={t.id} value={t.name} />)}
+                </datalist>
+              </Field>
+
+              <Field label="Year of Manufacture">
+                <input type="number" value={form.year_of_manufacture} onChange={e => set('year_of_manufacture', e.target.value)}
+                  placeholder="e.g. 2018"
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+
+              <Field label="Condition">
+                <select value={form.condition} onChange={e => set('condition', e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="">— Select —</option>
+                  <option value="used">Used</option>
+                  <option value="refurbished">Refurbished</option>
+                  <option value="new">New</option>
+                </select>
+              </Field>
+
+              <Field label="Location">
+                <input value={form.location} onChange={e => set('location', e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+
+              <Field label="Country of Origin">
+                <input value={form.country_of_origin} onChange={e => set('country_of_origin', e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+
+              <Field label="Catalog ID">
+                <input value={form.catalog_id} onChange={e => set('catalog_id', e.target.value)}
+                  placeholder="e.g. 1058-26042"
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+
+              <Field label="Price">
+                <input type="number" value={form.price} onChange={e => set('price', e.target.value)}
+                  placeholder="Leave blank = Price on Request"
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+
+              <Field label="Currency">
+                <select value={form.currency} onChange={e => set('currency', e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="EUR">EUR</option>
+                  <option value="USD">USD</option>
+                  <option value="GBP">GBP</option>
+                </select>
+              </Field>
+
+              <Field label="Image URL" colSpan={2}>
+                <input value={form.image_url} onChange={e => set('image_url', e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" />
+              </Field>
+
+              <Field label="Video URL" colSpan={2}>
+                <input value={form.video_url} onChange={e => set('video_url', e.target.value)}
+                  placeholder="YouTube or Vimeo link"
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" />
+              </Field>
+
+              <Field label="Description" colSpan={2}>
+                <textarea value={form.description} onChange={e => set('description', e.target.value)}
+                  rows={3}
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y" />
+              </Field>
+
+              <Field label="Specs (JSON)" colSpan={2}>
+                <textarea value={form.specs} onChange={e => set('specs', e.target.value)}
+                  rows={5}
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono resize-y" />
+              </Field>
+            </div>
+          )}
+
+          {tab === 'train' && (
+            <div className="space-y-5">
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                <p className="text-xs text-blue-700 font-medium mb-1">How Training Works</p>
+                <p className="text-xs text-blue-600">
+                  Enter the correct Machine Type and Brand below, then click <strong>Train</strong>.
+                  The system will match or create these in the registry and mark this machine as classified.
+                  Future scraped machines with the same type/brand will auto-match.
+                </p>
+              </div>
+
+              {/* Current machine info */}
+              <div className="bg-gray-50 rounded-xl p-4 space-y-2">
+                <p className="text-xs font-semibold text-gray-600 mb-2">Current Machine Data</p>
+                <Row label="Name" val={machine.name} />
+                <Row label="Brand" val={machine.brand} />
+                <Row label="Scraped Type" val={machine.machine_type} />
+                <Row label="Year" val={machine.year_of_manufacture} />
+                <Row label="Site" val={machine.site_name} />
+                <Row label="Catalog ID" val={machine.catalog_id} />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Machine Type (classify as)">
+                  <input
+                    value={trainType}
+                    onChange={e => setTrainType(e.target.value)}
+                    list="train-type-list"
+                    placeholder="e.g. Turret Punch Press"
+                    className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <datalist id="train-type-list">
+                    {types.map(t => <option key={t.id} value={t.name} />)}
+                  </datalist>
+                </Field>
+
+                <Field label="Brand (classify as)">
+                  <input
+                    value={trainBrand}
+                    onChange={e => setTrainBrand(e.target.value)}
+                    list="train-brand-list"
+                    placeholder="e.g. Amada"
+                    className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <datalist id="train-brand-list">
+                    {brands.map(b => <option key={b.id} value={b.name} />)}
+                  </datalist>
+                </Field>
+              </div>
+
+              {/* Train result */}
+              {trainResult && (
+                <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+                  <p className="text-xs font-semibold text-green-700 mb-2">Training Complete</p>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-green-700">
+                    <div><span className="text-green-500">Type matched:</span> <strong>{trainResult.matched_type}</strong></div>
+                    <div><span className="text-green-500">Brand matched:</span> <strong>{trainResult.matched_brand}</strong></div>
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={handleTrain}
+                disabled={training || (!trainType && !trainBrand)}
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+              >
+                {training ? (
+                  <>
+                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Training...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.347.347a3.5 3.5 0 01-4.95 0l-.347-.347z" />
+                    </svg>
+                    Train this Machine
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100">
+          <button onClick={onClose}
+            className="px-4 py-2 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+            Cancel
+          </button>
+          {tab === 'edit' && (
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-5 py-2 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold disabled:opacity-50 transition-colors flex items-center gap-2"
+            >
+              {saving && <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>}
+              {saving ? 'Saving...' : 'Save Changes'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Field({ label, children, colSpan }) {
+  return (
+    <div className={colSpan === 2 ? 'col-span-2' : ''}>
+      <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">{label}</label>
+      {children}
+    </div>
+  )
+}
+
+function Row({ label, val }) {
+  return (
+    <div className="flex gap-2 text-xs">
+      <span className="text-gray-400 w-24 flex-shrink-0">{label}:</span>
+      <span className="text-gray-700 font-medium truncate">{val ?? '—'}</span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main Page
+// ---------------------------------------------------------------------------
 export default function Machines() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
@@ -58,6 +427,7 @@ export default function Machines() {
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [showBulkConfirm, setShowBulkConfirm] = useState(false)
   const [togglingId, setTogglingId] = useState(null)
+  const [editMachineData, setEditMachineData] = useState(null)
 
   const qc = useQueryClient()
   const toast = useToast()
@@ -253,11 +623,12 @@ export default function Machines() {
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Machine</th>
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Site</th>
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Brand</th>
-                    <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Location</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Type</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Year</th>
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Price</th>
+                    <th className="text-center px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Status</th>
                     <th className="text-center px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Featured</th>
-                    <th className="text-center px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Link</th>
-                    <th className="text-center px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]"></th>
+                    <th className="text-center px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -270,7 +641,7 @@ export default function Machines() {
                       <td className="px-3 py-2.5">
                         <MachineImage url={m.image_url} name={m.name} />
                       </td>
-                      <td className="px-3 py-2.5 max-w-[200px]">
+                      <td className="px-3 py-2.5 max-w-[180px]">
                         <p className="font-medium text-gray-800 truncate" title={m.name}>{m.name}</p>
                         <p className="text-gray-400 text-[10px] mt-0.5 font-mono truncate">{m.id.slice(0, 8)}…</p>
                       </td>
@@ -279,9 +650,15 @@ export default function Machines() {
                           {m.site_name || '—'}
                         </span>
                       </td>
-                      <td className="px-3 py-2.5 text-gray-600">{m.brand || '—'}</td>
-                      <td className="px-3 py-2.5 text-gray-500 max-w-[120px] truncate">{m.location || '—'}</td>
+                      <td className="px-3 py-2.5 text-gray-600 max-w-[100px] truncate">{m.brand || '—'}</td>
+                      <td className="px-3 py-2.5 text-gray-500 max-w-[120px] truncate" title={m.machine_type}>
+                        {m.machine_type || '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">{m.year_of_manufacture || '—'}</td>
                       <td className="px-3 py-2.5 font-semibold text-gray-800 whitespace-nowrap">{formatPrice(m)}</td>
+                      <td className="px-3 py-2.5 text-center">
+                        <TrainedBadge trained={m.is_trained} />
+                      </td>
                       <td className="px-3 py-2.5 text-center">
                         <div className="flex justify-center">
                           <StarButton
@@ -291,35 +668,47 @@ export default function Machines() {
                           />
                         </div>
                       </td>
-                      <td className="px-3 py-2.5 text-center">
-                        {m.source_url ? (
-                          <a
-                            href={m.source_url} target="_blank" rel="noreferrer"
-                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-gray-200 text-blue-500 hover:bg-blue-50 hover:border-blue-200 transition-colors"
-                            title="View source"
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center justify-center gap-1">
+                          {/* Edit button */}
+                          <button
+                            onClick={() => setEditMachineData(m)}
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-gray-200 text-gray-400 hover:text-blue-500 hover:border-blue-200 hover:bg-blue-50 transition-colors"
+                            title="Edit machine"
                           >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                             </svg>
-                          </a>
-                        ) : <span className="text-gray-300">—</span>}
-                      </td>
-                      <td className="px-3 py-2.5 text-center">
-                        <button
-                          onClick={() => setDeleteTarget(m.id)}
-                          className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors"
-                          title="Delete"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
+                          </button>
+                          {/* Source link */}
+                          {m.source_url ? (
+                            <a
+                              href={m.source_url} target="_blank" rel="noreferrer"
+                              className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-gray-200 text-blue-500 hover:bg-blue-50 hover:border-blue-200 transition-colors"
+                              title="View source"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                              </svg>
+                            </a>
+                          ) : <span className="text-gray-300 w-7" />}
+                          {/* Delete */}
+                          <button
+                            onClick={() => setDeleteTarget(m.id)}
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors"
+                            title="Delete"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
                   {machines.length === 0 && (
                     <tr>
-                      <td colSpan={10} className="text-center py-16 text-gray-400">
+                      <td colSpan={11} className="text-center py-16 text-gray-400">
                         <svg className="w-8 h-8 mx-auto mb-2 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
@@ -360,6 +749,15 @@ export default function Machines() {
           </div>
         )}
       </div>
+
+      {/* Edit + Train Modal */}
+      {editMachineData && (
+        <EditMachineModal
+          machine={editMachineData}
+          onClose={() => setEditMachineData(null)}
+          onSaved={() => setEditMachineData(null)}
+        />
+      )}
 
       <ConfirmModal
         isOpen={!!deleteTarget}
