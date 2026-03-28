@@ -476,7 +476,7 @@ export default function Machines() {
   const total = data?.total || 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const sites = configsData?.configs?.map(c => c.name) || []
-  const brands = [...new Set(machines.map(m => m.brand).filter(Boolean))].sort()
+  const brands = data?.available_brands || []
 
   const allSelected = machines.length > 0 && machines.every(m => selectedIds.includes(m.id))
   const toggleAll = () => setSelectedIds(allSelected ? [] : machines.map(m => m.id))
@@ -546,7 +546,7 @@ export default function Machines() {
             {/* Site filter */}
             <select
               value={siteFilter}
-              onChange={e => { setSiteFilter(e.target.value); setPage(1) }}
+              onChange={e => { setSiteFilter(e.target.value); setBrandFilter(''); setPage(1) }}
               className="text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-600"
             >
               <option value="">All Sites</option>

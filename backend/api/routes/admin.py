@@ -1267,6 +1267,7 @@ async def list_machines(
     limit: int = Query(25, ge=1, le=100),
     search: Optional[str] = Query(None),
     site_name: Optional[str] = Query(None),
+    brand: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
@@ -1279,6 +1280,20 @@ async def list_machines(
         )
     if site_name:
         stmt = stmt.where(Machine.site_name == site_name)
+
+    # Fetch all distinct brands for the current site (before applying brand filter)
+    brands_base = select(Machine.brand).where(Machine.brand.isnot(None))
+    if site_name:
+        brands_base = brands_base.where(Machine.site_name == site_name)
+    if search:
+        brands_base = brands_base.where(
+            or_(Machine.name.ilike(f"%{search}%"), Machine.brand.ilike(f"%{search}%"))
+        )
+    brands_result = await db.execute(brands_base.distinct().order_by(Machine.brand))
+    available_brands = [r[0] for r in brands_result]
+
+    if brand:
+        stmt = stmt.where(Machine.brand == brand)
 
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total = await db.scalar(count_stmt)
@@ -1323,6 +1338,7 @@ async def list_machines(
         "limit": limit,
         "total": total or 0,
         "machines": [_m(m) for m in machines],
+        "available_brands": available_brands,
     }
 
 
