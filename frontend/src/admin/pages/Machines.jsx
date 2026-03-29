@@ -681,8 +681,8 @@ export default function Machines() {
                         </span>
                       </td>
                       <td className="px-3 py-2.5 text-gray-600 max-w-[100px] truncate">{m.brand || '—'}</td>
-                      <td className="px-3 py-2.5 text-gray-500 max-w-[110px] truncate" title={m.specs?.Model || m.specs?.model || ''}>
-                        {m.specs?.Model || m.specs?.model || '—'}
+                      <td className="px-3 py-2.5 text-gray-500 max-w-[110px] truncate" title={m.model || ''}>
+                        {m.model || '—'}
                       </td>
                       <td className="px-3 py-2.5 text-gray-500 max-w-[120px] truncate" title={m.machine_type}>
                         {m.machine_type || '—'}

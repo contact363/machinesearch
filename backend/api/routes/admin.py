@@ -1347,11 +1347,23 @@ async def list_machines(
     result = await db.execute(stmt)
     machines = result.scalars().all()
 
+    def _derive_model(m: Machine) -> str | None:
+        """Return model value: from specs first, then strip brand from name."""
+        specs = m.specs or {}
+        model_val = (specs.get("Model") or specs.get("model") or "").strip()
+        if not model_val and m.brand and m.name:
+            b = m.brand.strip()
+            n = m.name.strip()
+            if n.upper().startswith(b.upper()):
+                model_val = n[len(b):].strip(" -:/")
+        return model_val or None
+
     def _m(m: Machine) -> dict:
         return {
             "id": str(m.id),
             "name": m.name,
             "brand": m.brand,
+            "model": _derive_model(m),
             "price": m.price,
             "currency": m.currency,
             "location": m.location,
