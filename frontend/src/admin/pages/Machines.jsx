@@ -435,8 +435,10 @@ export default function Machines() {
   const qc = useQueryClient()
   const toast = useToast()
 
-  // debouncedModel kept in sync with model (dropdown = instant, no delay needed)
-  useEffect(() => { setDebouncedModel(model) }, [model])
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedModel(model); setPage(1) }, 400)
+    return () => clearTimeout(t)
+  }, [model])
 
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['machines', page, debouncedModel, siteFilter, brandFilter, typeFilter, yearSort],
@@ -571,15 +573,18 @@ export default function Machines() {
               {brands.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
 
-            {/* Model (dropdown — filled with actual data) */}
-            <select
-              value={model}
-              onChange={e => { setModel(e.target.value); setDebouncedModel(e.target.value); setPage(1) }}
-              className="text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-600"
-            >
-              <option value="">All Models</option>
-              {models.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
+            {/* Model (text input — typing) */}
+            <div className="relative">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input
+                value={model}
+                onChange={e => setModel(e.target.value)}
+                placeholder="Model search..."
+                className="pl-8 pr-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-44"
+              />
+            </div>
 
             {/* Clear filters */}
             {(model || siteFilter || brandFilter || typeFilter || yearSort) && (
@@ -641,6 +646,7 @@ export default function Machines() {
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Machine</th>
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Site</th>
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Brand</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Model</th>
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Type</th>
                     <th
                       className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px] cursor-pointer select-none hover:text-blue-500 whitespace-nowrap"
@@ -675,6 +681,9 @@ export default function Machines() {
                         </span>
                       </td>
                       <td className="px-3 py-2.5 text-gray-600 max-w-[100px] truncate">{m.brand || '—'}</td>
+                      <td className="px-3 py-2.5 text-gray-500 max-w-[110px] truncate" title={m.specs?.Model || m.specs?.model || ''}>
+                        {m.specs?.Model || m.specs?.model || '—'}
+                      </td>
                       <td className="px-3 py-2.5 text-gray-500 max-w-[120px] truncate" title={m.machine_type}>
                         {m.machine_type || '—'}
                       </td>
@@ -732,7 +741,7 @@ export default function Machines() {
                   ))}
                   {machines.length === 0 && (
                     <tr>
-                      <td colSpan={11} className="text-center py-16 text-gray-400">
+                      <td colSpan={12} className="text-center py-16 text-gray-400">
                         <svg className="w-8 h-8 mx-auto mb-2 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>

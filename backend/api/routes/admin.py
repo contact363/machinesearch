@@ -1321,9 +1321,14 @@ async def list_machines(
         r[0].strip('"') for r in models_result if r[0] and r[0] not in ("null", '""', "")
     ))
 
-    # Apply model filter — search in specs['Model']
+    # Apply model filter — search in name OR specs['Model']
     if model:
-        stmt = stmt.where(cast(Machine.specs["Model"], String).ilike(f'%"{model}"%'))
+        stmt = stmt.where(
+            or_(
+                Machine.name.ilike(f"%{model}%"),
+                cast(Machine.specs["Model"], String).ilike(f'%{model}%'),
+            )
+        )
 
     if brand:
         stmt = stmt.where(Machine.brand == brand)
