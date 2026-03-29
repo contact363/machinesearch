@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getMachines, deleteMachine, deleteBySite,
@@ -418,33 +419,37 @@ function Row({ label, val }) {
 // Main Page
 // ---------------------------------------------------------------------------
 export default function Machines() {
+  const navigate = useNavigate()
   const [page, setPage] = useState(1)
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [model, setModel] = useState('')
+  const [debouncedModel, setDebouncedModel] = useState('')
   const [siteFilter, setSiteFilter] = useState('')
   const [brandFilter, setBrandFilter] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
+  const [yearSort, setYearSort] = useState('')   // '' | 'asc' | 'desc'
   const [selectedIds, setSelectedIds] = useState([])
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [showBulkConfirm, setShowBulkConfirm] = useState(false)
   const [togglingId, setTogglingId] = useState(null)
-  const [editMachineData, setEditMachineData] = useState(null)
 
   const qc = useQueryClient()
   const toast = useToast()
 
   useEffect(() => {
-    const t = setTimeout(() => { setDebouncedSearch(search); setPage(1) }, 400)
+    const t = setTimeout(() => { setDebouncedModel(model); setPage(1) }, 400)
     return () => clearTimeout(t)
-  }, [search])
+  }, [model])
 
   const { data, isLoading, isFetching, refetch } = useQuery({
-    queryKey: ['machines', page, debouncedSearch, siteFilter, brandFilter],
+    queryKey: ['machines', page, debouncedModel, siteFilter, brandFilter, typeFilter, yearSort],
     queryFn: () => getMachines({
       page,
       limit: PAGE_SIZE,
-      search: debouncedSearch || undefined,
+      model: debouncedModel || undefined,
       site_name: siteFilter || undefined,
       brand: brandFilter || undefined,
+      machine_type: typeFilter || undefined,
+      year_sort: yearSort || undefined,
     }),
     staleTime: 0,
   })
@@ -477,6 +482,7 @@ export default function Machines() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const sites = configsData?.configs?.map(c => c.name) || []
   const brands = data?.available_brands || []
+  const types = data?.available_types || []
 
   const allSelected = machines.length > 0 && machines.every(m => selectedIds.includes(m.id))
   const toggleAll = () => setSelectedIds(allSelected ? [] : machines.map(m => m.id))
@@ -512,7 +518,13 @@ export default function Machines() {
   }
 
   const handleClear = () => {
-    setSearch(''); setSiteFilter(''); setBrandFilter(''); setPage(1); setSelectedIds([])
+    setModel(''); setDebouncedModel(''); setSiteFilter(''); setBrandFilter('')
+    setTypeFilter(''); setYearSort(''); setPage(1); setSelectedIds([])
+  }
+
+  const toggleYearSort = () => {
+    setYearSort(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? '' : 'asc')
+    setPage(1)
   }
 
   const pageButtons = () => {
@@ -530,30 +542,27 @@ export default function Machines() {
         {/* Toolbar */}
         <div className="bg-white rounded-xl border border-gray-200 px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
-            {/* Search */}
-            <div className="relative">
-              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              <input
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Search machines..."
-                className="pl-8 pr-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-48"
-              />
-            </div>
-
-            {/* Site filter */}
+            {/* Website (dropdown) */}
             <select
               value={siteFilter}
-              onChange={e => { setSiteFilter(e.target.value); setBrandFilter(''); setPage(1) }}
+              onChange={e => { setSiteFilter(e.target.value); setBrandFilter(''); setTypeFilter(''); setPage(1) }}
               className="text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-600"
             >
-              <option value="">All Sites</option>
+              <option value="">All Websites</option>
               {sites.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
 
-            {/* Brand filter */}
+            {/* Type (dropdown) */}
+            <select
+              value={typeFilter}
+              onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
+              className="text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-600"
+            >
+              <option value="">All Types</option>
+              {types.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+
+            {/* Brand (dropdown) */}
             <select
               value={brandFilter}
               onChange={e => { setBrandFilter(e.target.value); setPage(1) }}
@@ -563,8 +572,21 @@ export default function Machines() {
               {brands.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
 
+            {/* Model (text input — typing) */}
+            <div className="relative">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input
+                value={model}
+                onChange={e => setModel(e.target.value)}
+                placeholder="Model search..."
+                className="pl-8 pr-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-44"
+              />
+            </div>
+
             {/* Clear filters */}
-            {(search || siteFilter || brandFilter) && (
+            {(model || siteFilter || brandFilter || typeFilter || yearSort) && (
               <button onClick={handleClear} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-2">
                 Clear filters
               </button>
@@ -624,7 +646,13 @@ export default function Machines() {
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Site</th>
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Brand</th>
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Type</th>
-                    <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Year</th>
+                    <th
+                      className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px] cursor-pointer select-none hover:text-blue-500 whitespace-nowrap"
+                      onClick={toggleYearSort}
+                      title="Sort by year"
+                    >
+                      Year {yearSort === 'asc' ? '↑' : yearSort === 'desc' ? '↓' : '↕'}
+                    </th>
                     <th className="text-left px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Price</th>
                     <th className="text-center px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Status</th>
                     <th className="text-center px-3 py-3 font-semibold text-gray-500 uppercase tracking-wider text-[10px]">Featured</th>
@@ -670,9 +698,9 @@ export default function Machines() {
                       </td>
                       <td className="px-3 py-2.5">
                         <div className="flex items-center justify-center gap-1">
-                          {/* Edit button */}
+                          {/* Edit button → full page */}
                           <button
-                            onClick={() => setEditMachineData(m)}
+                            onClick={() => navigate(`/admin/machines/${m.id}`)}
                             className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-gray-200 text-gray-400 hover:text-blue-500 hover:border-blue-200 hover:bg-blue-50 transition-colors"
                             title="Edit machine"
                           >
@@ -749,15 +777,6 @@ export default function Machines() {
           </div>
         )}
       </div>
-
-      {/* Edit + Train Modal */}
-      {editMachineData && (
-        <EditMachineModal
-          machine={editMachineData}
-          onClose={() => setEditMachineData(null)}
-          onSaved={() => setEditMachineData(null)}
-        />
-      )}
 
       <ConfirmModal
         isOpen={!!deleteTarget}

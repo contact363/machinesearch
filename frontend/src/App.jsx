@@ -13,6 +13,7 @@ import Dashboard from './admin/pages/Dashboard'
 import SiteConfigs from './admin/pages/SiteConfigs'
 import ScraperJobs from './admin/pages/ScraperJobs'
 import Machines from './admin/pages/Machines'
+import AdminMachineDetail from './admin/pages/MachineDetail'
 import Analytics from './admin/pages/Analytics'
 
 const qc = new QueryClient({
@@ -42,7 +43,8 @@ export default function App() {
             <Route path="/admin/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
             <Route path="/admin/sites"     element={<ProtectedRoute><SiteConfigs /></ProtectedRoute>} />
             <Route path="/admin/jobs"      element={<ProtectedRoute><ScraperJobs /></ProtectedRoute>} />
-            <Route path="/admin/machines"  element={<ProtectedRoute><Machines /></ProtectedRoute>} />
+            <Route path="/admin/machines"     element={<ProtectedRoute><Machines /></ProtectedRoute>} />
+            <Route path="/admin/machines/:id" element={<ProtectedRoute><AdminMachineDetail /></ProtectedRoute>} />
             <Route path="/admin/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
 
             {/* Catch-all */}

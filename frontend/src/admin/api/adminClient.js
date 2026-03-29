@@ -73,6 +73,9 @@ export const deleteJob = id =>
 export const getMachines = params =>
   api.get('/admin/machines', { params }).then(r => r.data)
 
+export const getMachine = id =>
+  api.get(`/admin/machines/${id}`).then(r => r.data)
+
 export const toggleFeatured = id =>
   api.patch(`/admin/machines/${id}/toggle-featured`).then(r => r.data)
 
