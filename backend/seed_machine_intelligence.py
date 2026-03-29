@@ -70,36 +70,30 @@ async def main():
     logger.info("Unique machine types : %d", len(all_types))
     logger.info("Unique brands        : %d", len(all_brands))
 
-    # ── Step 3: upsert machine_types ─────────────────────────────────────────
-    logger.info("Upserting machine types...")
-    types_added = 0
+    # ── Step 3: bulk upsert machine_types ────────────────────────────────────
+    logger.info("Bulk upserting machine types...")
     async with Session() as session:
-        for type_name in all_types:
-            stmt = (
-                pg_insert(MachineType)
-                .values(name=type_name, aliases=[])
-                .on_conflict_do_nothing(index_elements=["name"])
-            )
-            result = await session.execute(stmt)
-            if result.rowcount > 0:
-                types_added += 1
+        stmt = (
+            pg_insert(MachineType)
+            .values([{"name": t, "aliases": []} for t in all_types])
+            .on_conflict_do_nothing(index_elements=["name"])
+        )
+        result = await session.execute(stmt)
         await session.commit()
+        types_added = result.rowcount
     logger.info("  Types added: %d (skipped existing)", types_added)
 
-    # ── Step 4: upsert machine_brands ─────────────────────────────────────────
-    logger.info("Upserting machine brands...")
-    brands_added = 0
+    # ── Step 4: bulk upsert machine_brands ───────────────────────────────────
+    logger.info("Bulk upserting machine brands...")
     async with Session() as session:
-        for brand_name in all_brands:
-            stmt = (
-                pg_insert(MachineBrand)
-                .values(name=brand_name, aliases=[])
-                .on_conflict_do_nothing(index_elements=["name"])
-            )
-            result = await session.execute(stmt)
-            if result.rowcount > 0:
-                brands_added += 1
+        stmt = (
+            pg_insert(MachineBrand)
+            .values([{"name": b, "aliases": []} for b in all_brands])
+            .on_conflict_do_nothing(index_elements=["name"])
+        )
+        result = await session.execute(stmt)
         await session.commit()
+        brands_added = result.rowcount
     logger.info("  Brands added: %d (skipped existing)", brands_added)
 
     # ── Step 5: update machines table — link brand_id and type_id ────────────
