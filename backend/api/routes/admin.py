@@ -1274,15 +1274,13 @@ async def list_machines(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
-    from sqlalchemy import or_, asc
+    from sqlalchemy import or_, asc, cast, String, text
 
     stmt = select(Machine)
     if search:
         stmt = stmt.where(
             or_(Machine.name.ilike(f"%{search}%"), Machine.brand.ilike(f"%{search}%"))
         )
-    if model:
-        stmt = stmt.where(Machine.name.ilike(f"%{model}%"))
     if site_name:
         stmt = stmt.where(Machine.site_name == site_name)
     if machine_type:
@@ -1303,6 +1301,29 @@ async def list_machines(
         types_base = types_base.where(Machine.site_name == site_name)
     types_result = await db.execute(types_base.distinct().order_by(Machine.machine_type))
     available_types = [r[0] for r in types_result]
+
+    # Fetch distinct models from specs['Model'] for current filters
+    model_expr = cast(Machine.specs["Model"], String)
+    models_base = select(model_expr.label("model")).where(
+        Machine.specs.isnot(None),
+        model_expr.isnot(None),
+        model_expr != "null",
+        model_expr != '""',
+    )
+    if site_name:
+        models_base = models_base.where(Machine.site_name == site_name)
+    if machine_type:
+        models_base = models_base.where(Machine.machine_type == machine_type)
+    if brand:
+        models_base = models_base.where(Machine.brand == brand)
+    models_result = await db.execute(models_base.distinct().order_by(text("model")))
+    available_models = sorted(set(
+        r[0].strip('"') for r in models_result if r[0] and r[0] not in ("null", '""', "")
+    ))
+
+    # Apply model filter — search in specs['Model']
+    if model:
+        stmt = stmt.where(cast(Machine.specs["Model"], String).ilike(f'%"{model}"%'))
 
     if brand:
         stmt = stmt.where(Machine.brand == brand)
@@ -1358,6 +1379,7 @@ async def list_machines(
         "machines": [_m(m) for m in machines],
         "available_brands": available_brands,
         "available_types": available_types,
+        "available_models": available_models,
     }
 
 

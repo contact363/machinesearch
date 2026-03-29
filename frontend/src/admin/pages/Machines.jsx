@@ -435,10 +435,8 @@ export default function Machines() {
   const qc = useQueryClient()
   const toast = useToast()
 
-  useEffect(() => {
-    const t = setTimeout(() => { setDebouncedModel(model); setPage(1) }, 400)
-    return () => clearTimeout(t)
-  }, [model])
+  // debouncedModel kept in sync with model (dropdown = instant, no delay needed)
+  useEffect(() => { setDebouncedModel(model) }, [model])
 
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['machines', page, debouncedModel, siteFilter, brandFilter, typeFilter, yearSort],
@@ -483,6 +481,7 @@ export default function Machines() {
   const sites = configsData?.configs?.map(c => c.name) || []
   const brands = data?.available_brands || []
   const types = data?.available_types || []
+  const models = data?.available_models || []
 
   const allSelected = machines.length > 0 && machines.every(m => selectedIds.includes(m.id))
   const toggleAll = () => setSelectedIds(allSelected ? [] : machines.map(m => m.id))
@@ -572,18 +571,15 @@ export default function Machines() {
               {brands.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
 
-            {/* Model (text input — typing) */}
-            <div className="relative">
-              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              <input
-                value={model}
-                onChange={e => setModel(e.target.value)}
-                placeholder="Model search..."
-                className="pl-8 pr-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-44"
-              />
-            </div>
+            {/* Model (dropdown — filled with actual data) */}
+            <select
+              value={model}
+              onChange={e => { setModel(e.target.value); setDebouncedModel(e.target.value); setPage(1) }}
+              className="text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-600"
+            >
+              <option value="">All Models</option>
+              {models.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
 
             {/* Clear filters */}
             {(model || siteFilter || brandFilter || typeFilter || yearSort) && (
