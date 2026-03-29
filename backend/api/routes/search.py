@@ -9,7 +9,7 @@ from sqlalchemy import select, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.db import get_db
-from database.models import Machine, ClickEvent
+from database.models import Machine, ClickEvent, MachineType, MachineBrand
 
 router = APIRouter()
 
@@ -45,13 +45,30 @@ async def search_machines(
     stmt = select(Machine)
 
     if q:
-        stmt = stmt.where(
-            or_(
-                Machine.name.ilike(f"%{q}%"),
-                Machine.brand.ilike(f"%{q}%"),
-                Machine.description.ilike(f"%{q}%"),
-            )
+        # Find type_ids matching the query (e.g. "VMC" → type_id of VMC)
+        type_ids_result = await db.execute(
+            select(MachineType.id).where(MachineType.name.ilike(f"%{q}%"))
         )
+        matched_type_ids = [r[0] for r in type_ids_result]
+
+        # Find brand_ids matching the query
+        brand_ids_result = await db.execute(
+            select(MachineBrand.id).where(MachineBrand.name.ilike(f"%{q}%"))
+        )
+        matched_brand_ids = [r[0] for r in brand_ids_result]
+
+        conditions = [
+            Machine.name.ilike(f"%{q}%"),
+            Machine.brand.ilike(f"%{q}%"),
+            Machine.description.ilike(f"%{q}%"),
+            Machine.machine_type.ilike(f"%{q}%"),
+        ]
+        if matched_type_ids:
+            conditions.append(Machine.type_id.in_(matched_type_ids))
+        if matched_brand_ids:
+            conditions.append(Machine.brand_id.in_(matched_brand_ids))
+
+        stmt = stmt.where(or_(*conditions))
     if site:
         stmt = stmt.where(Machine.site_name == site)
     if brand:
@@ -147,6 +164,24 @@ async def get_machine(machine_id: str, db: AsyncSession = Depends(get_db)):
         "view_count": machine.view_count,
         "click_count": machine.click_count,
         "created_at": machine.created_at.isoformat() if machine.created_at else None,
+    }
+
+
+@router.get("/suggest")
+async def suggest(q: str = Query(..., min_length=1), db: AsyncSession = Depends(get_db)):
+    """
+    Smart autocomplete — returns matching machine types and brands from the
+    intelligence sheet so the search box can suggest as user types.
+    """
+    types_result = await db.execute(
+        select(MachineType.name).where(MachineType.name.ilike(f"%{q}%")).limit(10)
+    )
+    brands_result = await db.execute(
+        select(MachineBrand.name).where(MachineBrand.name.ilike(f"%{q}%")).limit(10)
+    )
+    return {
+        "types": [r[0] for r in types_result],
+        "brands": [r[0] for r in brands_result],
     }
 
 
