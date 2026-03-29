@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from api.routes import admin, analytics, auth, configs, machines, scraper, search
+from api.routes import admin, analytics, auth, configs, machines, scraper, search, vibkg
 from database.db import init_db
 
 scheduler = AsyncIOScheduler(timezone="UTC")
@@ -92,6 +92,7 @@ app.include_router(scraper.router, prefix="/api/v1/scraper", tags=["scraper"])
 app.include_router(configs.router, prefix="/api/v1/configs", tags=["configs"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
+app.include_router(vibkg.router, prefix="/api/v1/vibkg", tags=["vib-kg"])
 
 
 @app.get("/health", tags=["health"])
