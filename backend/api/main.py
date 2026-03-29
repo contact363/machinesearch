@@ -45,6 +45,36 @@ async def _auto_scrape_all():
         asyncio.create_task(_run_scrape_background(sc.name, cfg, job_id, db_url))
 
 
+async def _auto_sync_corelmachine():
+    """Triggered every 6 hours: full 3-step sync for Corel Machines (scrape + delete stale)."""
+    print("[corelmachine-sync] Starting scheduled sync...")
+    try:
+        import sys, importlib.util, pathlib
+        script = pathlib.Path(__file__).parent.parent / "run_corelmachine_scrape.py"
+        spec = importlib.util.spec_from_file_location("run_corelmachine_scrape", script)
+        mod  = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        await mod.main()
+        print("[corelmachine-sync] Sync complete.")
+    except Exception as exc:
+        print(f"[corelmachine-sync] ERROR: {exc}")
+
+
+async def _auto_sync_emuk():
+    """Triggered every 6 hours: full 3-step sync for EMUK (scrape + delete stale)."""
+    print("[emuk-sync] Starting scheduled sync...")
+    try:
+        import importlib.util, pathlib
+        script = pathlib.Path(__file__).parent.parent / "run_emuk_scrape.py"
+        spec = importlib.util.spec_from_file_location("run_emuk_scrape", script)
+        mod  = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        await mod.main()
+        print("[emuk-sync] Sync complete.")
+    except Exception as exc:
+        print(f"[emuk-sync] ERROR: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: runs startup logic before yield, shutdown logic after."""
@@ -57,8 +87,24 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
         max_instances=1,
     )
+    scheduler.add_job(
+        _auto_sync_corelmachine,
+        IntervalTrigger(hours=6),
+        id="auto_sync_corelmachine",
+        replace_existing=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _auto_sync_emuk,
+        IntervalTrigger(hours=6),
+        id="auto_sync_emuk",
+        replace_existing=True,
+        max_instances=1,
+    )
     scheduler.start()
     print("Auto-scrape scheduler started (every 2 hours)")
+    print("Corel Machines sync scheduler started (every 6 hours)")
+    print("EMUK sync scheduler started (every 6 hours)")
     yield
     scheduler.shutdown(wait=False)
     print("MachineSearch API shutting down.")
