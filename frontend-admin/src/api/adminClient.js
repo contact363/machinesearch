@@ -58,6 +58,12 @@ export const getJobHistory = params =>
 export const getMachines = params =>
   api.get('/admin/machines', { params }).then(r => r.data)
 
+export const getMachine = id =>
+  api.get(`/admin/machines/${id}`).then(r => r.data)
+
+export const editMachine = (id, data) =>
+  api.put(`/admin/machines/${id}`, data).then(r => r.data)
+
 export const deleteMachine = id =>
   api.delete(`/admin/machines/${id}`).then(r => r.data)
 

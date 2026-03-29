@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard'
 import SiteConfigs from './pages/SiteConfigs'
 import ScraperJobs from './pages/ScraperJobs'
 import Machines from './pages/Machines'
+import MachineDetail from './pages/MachineDetail'
 import Analytics from './pages/Analytics'
 
 const qc = new QueryClient({
@@ -31,6 +32,7 @@ export default function App() {
             <Route path="/sites"     element={<ProtectedRoute><SiteConfigs /></ProtectedRoute>} />
             <Route path="/jobs"      element={<ProtectedRoute><ScraperJobs /></ProtectedRoute>} />
             <Route path="/machines"  element={<ProtectedRoute><Machines /></ProtectedRoute>} />
+            <Route path="/machines/:id" element={<ProtectedRoute><MachineDetail /></ProtectedRoute>} />
             <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
           </Routes>
         </BrowserRouter>

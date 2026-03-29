@@ -1268,29 +1268,41 @@ async def list_machines(
     search: Optional[str] = Query(None),
     site_name: Optional[str] = Query(None),
     brand: Optional[str] = Query(None),
+    machine_type: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
+    year_sort: Optional[str] = Query(None, description="asc or desc — sort by year of manufacture"),
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(_get_current_admin),
 ):
-    from sqlalchemy import or_
+    from sqlalchemy import or_, asc
 
     stmt = select(Machine)
     if search:
         stmt = stmt.where(
             or_(Machine.name.ilike(f"%{search}%"), Machine.brand.ilike(f"%{search}%"))
         )
+    if model:
+        stmt = stmt.where(Machine.name.ilike(f"%{model}%"))
     if site_name:
         stmt = stmt.where(Machine.site_name == site_name)
+    if machine_type:
+        stmt = stmt.where(Machine.machine_type == machine_type)
 
-    # Fetch all distinct brands for the current site (before applying brand filter)
+    # Fetch distinct brands for current filters (before applying brand filter)
     brands_base = select(Machine.brand).where(Machine.brand.isnot(None))
     if site_name:
         brands_base = brands_base.where(Machine.site_name == site_name)
-    if search:
-        brands_base = brands_base.where(
-            or_(Machine.name.ilike(f"%{search}%"), Machine.brand.ilike(f"%{search}%"))
-        )
+    if machine_type:
+        brands_base = brands_base.where(Machine.machine_type == machine_type)
     brands_result = await db.execute(brands_base.distinct().order_by(Machine.brand))
     available_brands = [r[0] for r in brands_result]
+
+    # Fetch distinct machine types for current filters (before applying type filter)
+    types_base = select(Machine.machine_type).where(Machine.machine_type.isnot(None))
+    if site_name:
+        types_base = types_base.where(Machine.site_name == site_name)
+    types_result = await db.execute(types_base.distinct().order_by(Machine.machine_type))
+    available_types = [r[0] for r in types_result]
 
     if brand:
         stmt = stmt.where(Machine.brand == brand)
@@ -1298,7 +1310,14 @@ async def list_machines(
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total = await db.scalar(count_stmt)
 
-    stmt = stmt.order_by(desc(Machine.created_at)).offset((page - 1) * limit).limit(limit)
+    if year_sort == "asc":
+        stmt = stmt.order_by(asc(Machine.year_of_manufacture).nulls_last())
+    elif year_sort == "desc":
+        stmt = stmt.order_by(desc(Machine.year_of_manufacture).nulls_last())
+    else:
+        stmt = stmt.order_by(desc(Machine.created_at))
+
+    stmt = stmt.offset((page - 1) * limit).limit(limit)
     result = await db.execute(stmt)
     machines = result.scalars().all()
 
@@ -1320,7 +1339,6 @@ async def list_machines(
             "view_count": m.view_count,
             "click_count": m.click_count,
             "created_at": m.created_at.isoformat() if m.created_at else None,
-            # Extended fields
             "machine_type": getattr(m, "machine_type", None),
             "year_of_manufacture": getattr(m, "year_of_manufacture", None),
             "condition": getattr(m, "condition", None),
@@ -1339,6 +1357,57 @@ async def list_machines(
         "total": total or 0,
         "machines": [_m(m) for m in machines],
         "available_brands": available_brands,
+        "available_types": available_types,
+    }
+
+
+@router.get("/machines/{machine_id}")
+async def get_machine_detail(
+    machine_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(_get_current_admin),
+):
+    """Get full details of a single machine by UUID."""
+    try:
+        uid = uuid.UUID(machine_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid machine ID")
+    m = await db.scalar(select(Machine).where(Machine.id == uid))
+    if not m:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    specs = m.specs or {}
+    primary = m.image_url
+    extras = m.extra_images or []
+    all_images = ([primary] if primary else []) + [i for i in extras if i and i != primary]
+    return {
+        "id": str(m.id),
+        "name": m.name,
+        "brand": m.brand,
+        "price": m.price,
+        "currency": m.currency,
+        "location": m.location,
+        "image_url": primary,
+        "extra_images": extras,
+        "all_images": all_images,
+        "description": m.description,
+        "specs": specs,
+        "source_url": m.source_url,
+        "site_name": m.site_name,
+        "language": m.language,
+        "is_featured": getattr(m, "is_featured", False),
+        "view_count": m.view_count,
+        "click_count": m.click_count,
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+        "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+        "machine_type": getattr(m, "machine_type", None),
+        "year_of_manufacture": getattr(m, "year_of_manufacture", None),
+        "condition": getattr(m, "condition", None),
+        "video_url": getattr(m, "video_url", None),
+        "catalog_id": getattr(m, "catalog_id", None),
+        "country_of_origin": getattr(m, "country_of_origin", None),
+        "is_trained": getattr(m, "is_trained", False),
+        "type_id": str(m.type_id) if getattr(m, "type_id", None) else None,
+        "brand_id": str(m.brand_id) if getattr(m, "brand_id", None) else None,
     }
 
 

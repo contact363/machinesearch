@@ -1,92 +1,43 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getMachines, deleteMachine, deleteBySite, getSiteConfigs } from '../api/adminClient'
 import AdminLayout from '../components/AdminLayout'
 import ConfirmModal from '../components/ConfirmModal'
 import { useToast } from '../components/Toast'
 
-function DetailModal({ machine, onClose }) {
-  if (!machine) return null
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b sticky top-0 bg-white">
-          <h3 className="font-semibold text-gray-800 text-sm truncate mr-4">{machine.name}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl flex-shrink-0">✕</button>
-        </div>
-        <div className="p-6 space-y-4">
-          {machine.image_url && (
-            <img src={machine.image_url} alt="" className="w-32 h-24 object-cover rounded-lg border" onError={e => e.target.style.display='none'} />
-          )}
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            {[
-              ['ID', machine.id],
-              ['Brand', machine.brand],
-              ['Price', machine.price ? `${machine.price} ${machine.currency}` : '—'],
-              ['Location', machine.location],
-              ['Site', machine.site_name],
-              ['Language', machine.language],
-              ['Views', machine.view_count],
-              ['Clicks', machine.click_count],
-              ['Created', machine.created_at ? new Date(machine.created_at).toLocaleString() : '—'],
-            ].map(([k, v]) => (
-              <div key={k}><span className="text-gray-500">{k}:</span> <span className="text-gray-800">{v ?? '—'}</span></div>
-            ))}
-          </div>
-          {machine.description && (
-            <div>
-              <p className="text-xs font-medium text-gray-500 mb-1">Description</p>
-              <p className="text-sm text-gray-700 bg-gray-50 rounded-lg p-3">{machine.description}</p>
-            </div>
-          )}
-          {machine.source_url && (
-            <a href={machine.source_url} target="_blank" rel="noreferrer"
-              className="inline-flex items-center gap-2 text-blue-600 text-sm hover:underline">
-              🔗 View source
-            </a>
-          )}
-          {machine.specs && Object.keys(machine.specs).length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-gray-500 mb-2">Specs</p>
-              <table className="w-full text-xs border border-gray-100 rounded-lg overflow-hidden">
-                <tbody>
-                  {Object.entries(machine.specs).map(([k, v]) => (
-                    <tr key={k} className="border-b border-gray-50">
-                      <td className="px-3 py-1.5 bg-gray-50 font-medium text-gray-600 w-1/3">{k}</td>
-                      <td className="px-3 py-1.5 text-gray-700">{String(v)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export default function Machines() {
+  const navigate = useNavigate()
   const [page, setPage] = useState(1)
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [model, setModel] = useState('')
+  const [debouncedModel, setDebouncedModel] = useState('')
   const [siteFilter, setSiteFilter] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
+  const [brandFilter, setBrandFilter] = useState('')
+  const [yearSort, setYearSort] = useState('')   // '' | 'asc' | 'desc'
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [bulkDeleteSite, setBulkDeleteSite] = useState(null)
-  const [detailMachine, setDetailMachine] = useState(null)
 
   const qc = useQueryClient()
   const toast = useToast()
 
-  // Debounce search
+  // Debounce model text input
   useEffect(() => {
-    const t = setTimeout(() => { setDebouncedSearch(search); setPage(1) }, 400)
+    const t = setTimeout(() => { setDebouncedModel(model); setPage(1) }, 400)
     return () => clearTimeout(t)
-  }, [search])
+  }, [model])
 
   const { data, isLoading } = useQuery({
-    queryKey: ['machines', page, debouncedSearch, siteFilter],
-    queryFn: () => getMachines({ page, limit: 25, search: debouncedSearch || undefined, site_name: siteFilter || undefined }),
+    queryKey: ['machines', page, debouncedModel, siteFilter, typeFilter, brandFilter, yearSort],
+    queryFn: () => getMachines({
+      page,
+      limit: 25,
+      model: debouncedModel || undefined,
+      site_name: siteFilter || undefined,
+      machine_type: typeFilter || undefined,
+      brand: brandFilter || undefined,
+      year_sort: yearSort || undefined,
+    }),
   })
 
   const { data: configsData } = useQuery({
@@ -106,35 +57,74 @@ export default function Machines() {
     onError: e => toast(e.response?.data?.detail || 'Bulk delete failed', 'error'),
   })
 
-  const machines = data?.machines || []
-  const total = data?.total || 0
-  const totalPages = Math.ceil(total / 25)
-  const sites = configsData?.configs?.map(c => c.name) || []
+  const machines        = data?.machines || []
+  const total           = data?.total || 0
+  const totalPages      = Math.ceil(total / 25)
+  const sites           = configsData?.configs?.map(c => c.name) || []
+  const availableBrands = data?.available_brands || []
+  const availableTypes  = data?.available_types || []
 
-  const formatPrice = (m) => {
-    if (!m.price) return '—'
-    return `${m.currency || ''} ${m.price.toLocaleString()}`
+  const clearFilters = () => {
+    setModel(''); setDebouncedModel(''); setSiteFilter('')
+    setTypeFilter(''); setBrandFilter(''); setYearSort(''); setPage(1)
   }
+
+  const toggleYearSort = () => {
+    setYearSort(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? '' : 'asc')
+    setPage(1)
+  }
+
+  const formatPrice = m => m.price ? `${m.currency || ''} ${m.price.toLocaleString()}` : '—'
 
   return (
     <AdminLayout>
       <div className="space-y-4">
-        {/* Top bar */}
-        <div className="flex flex-wrap items-center gap-3">
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search name or brand…"
-            className="border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 w-64"
-          />
+
+        {/* ── Filter bar ── */}
+        <div className="bg-white rounded-xl shadow-sm px-4 py-3 flex flex-wrap items-center gap-3">
+
+          {/* Website (dropdown) */}
           <select
             value={siteFilter}
-            onChange={e => { setSiteFilter(e.target.value); setPage(1) }}
+            onChange={e => { setSiteFilter(e.target.value); setBrandFilter(''); setTypeFilter(''); setPage(1) }}
             className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
           >
-            <option value="">All sites</option>
+            <option value="">All Websites</option>
             {sites.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
+
+          {/* Type (dropdown) */}
+          <select
+            value={typeFilter}
+            onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            <option value="">All Types</option>
+            {availableTypes.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+
+          {/* Brand (dropdown) */}
+          <select
+            value={brandFilter}
+            onChange={e => { setBrandFilter(e.target.value); setPage(1) }}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            <option value="">All Brands</option>
+            {availableBrands.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+
+          {/* Model (text input — typing) */}
+          <input
+            value={model}
+            onChange={e => setModel(e.target.value)}
+            placeholder="Model search…"
+            className="border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 w-48"
+          />
+
+          <button onClick={clearFilters} className="text-sm text-gray-500 hover:text-gray-700 underline">
+            Clear filters
+          </button>
+
           <span className="text-sm text-gray-500 ml-auto">Total: {total.toLocaleString()} machines</span>
         </div>
 
@@ -163,13 +153,20 @@ export default function Machines() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-100">
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Image</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Name</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Brand</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Price</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Location</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600 w-10"></th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Machine</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Site</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Date</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Brand</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Type</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600 cursor-pointer select-none whitespace-nowrap"
+                        onClick={toggleYearSort}>
+                      Year&nbsp;
+                      <span className="text-gray-400">
+                        {yearSort === 'asc' ? '↑' : yearSort === 'desc' ? '↓' : '↕'}
+                      </span>
+                    </th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Price</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Status</th>
                     <th className="text-right px-4 py-3 font-medium text-gray-600">Actions</th>
                   </tr>
                 </thead>
@@ -179,33 +176,45 @@ export default function Machines() {
                       <td className="px-4 py-2">
                         {m.image_url ? (
                           <img src={m.image_url} alt="" className="w-10 h-10 object-cover rounded border bg-gray-100"
-                            onError={e => { e.target.onerror=null; e.target.src=''; e.target.className='w-10 h-10 rounded border bg-gray-100' }} />
+                            onError={e => { e.target.onerror = null; e.target.className = 'w-10 h-10 rounded border bg-gray-100' }} />
                         ) : (
                           <div className="w-10 h-10 rounded border bg-gray-100 flex items-center justify-center text-gray-300 text-xs">?</div>
                         )}
                       </td>
                       <td className="px-4 py-2 max-w-xs">
-                        <p className="text-gray-800 truncate text-xs">{m.name}</p>
+                        <p className="text-gray-800 truncate text-xs font-medium">{m.name}</p>
+                        {m.catalog_id && <p className="text-gray-400 text-xs">{m.catalog_id}</p>}
+                      </td>
+                      <td className="px-4 py-2">
+                        <span className="bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded">{m.site_name}</span>
                       </td>
                       <td className="px-4 py-2 text-gray-600 text-xs">{m.brand || '—'}</td>
+                      <td className="px-4 py-2 text-gray-600 text-xs max-w-[140px] truncate">{m.machine_type || '—'}</td>
+                      <td className="px-4 py-2 text-gray-700 text-xs">{m.year_of_manufacture || '—'}</td>
                       <td className="px-4 py-2 text-gray-700 text-xs whitespace-nowrap">{formatPrice(m)}</td>
-                      <td className="px-4 py-2 text-gray-600 text-xs">{m.location || '—'}</td>
-                      <td className="px-4 py-2"><span className="bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded">{m.site_name}</span></td>
-                      <td className="px-4 py-2 text-gray-500 text-xs whitespace-nowrap">
-                        {m.created_at ? new Date(m.created_at).toLocaleDateString() : '—'}
+                      <td className="px-4 py-2 text-xs">
+                        <span className={`px-2 py-0.5 rounded ${m.condition === 'used' ? 'bg-yellow-50 text-yellow-700' : 'bg-green-50 text-green-700'}`}>
+                          {m.condition || 'used'}
+                        </span>
                       </td>
                       <td className="px-4 py-2">
                         <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => setDetailMachine(m)}
-                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors text-xs">👁</button>
-                          <button onClick={() => setDeleteTarget(m.id)}
-                            className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors text-xs">🗑</button>
+                          <button
+                            onClick={() => navigate(`/machines/${m.id}`)}
+                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors text-xs"
+                            title="View / Edit"
+                          >✏️</button>
+                          <button
+                            onClick={() => setDeleteTarget(m.id)}
+                            className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors text-xs"
+                            title="Delete"
+                          >🗑</button>
                         </div>
                       </td>
                     </tr>
                   ))}
                   {machines.length === 0 && (
-                    <tr><td colSpan={8} className="text-center py-8 text-gray-400">No machines found</td></tr>
+                    <tr><td colSpan={9} className="text-center py-8 text-gray-400">No machines found</td></tr>
                   )}
                 </tbody>
               </table>
@@ -235,8 +244,6 @@ export default function Machines() {
           </div>
         )}
       </div>
-
-      <DetailModal machine={detailMachine} onClose={() => setDetailMachine(null)} />
 
       <ConfirmModal
         isOpen={!!deleteTarget}
