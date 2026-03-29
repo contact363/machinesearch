@@ -9,7 +9,7 @@ specs, description, video_url, country_of_origin, source_url, timestamps.
 import uuid as _uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.db import get_db
@@ -22,7 +22,6 @@ def _full_dict(m: Machine) -> dict:
     """Return every available field for a VIB-KG machine."""
     specs = m.specs or {}
 
-    # Build a unified images list: primary image first, then extras (no duplicates)
     primary = m.image_url
     extras = m.extra_images or []
     all_images: list[str] = []
@@ -33,47 +32,30 @@ def _full_dict(m: Machine) -> dict:
             all_images.append(img)
 
     return {
-        # ── Identity ──────────────────────────────────────────────────────────
         "id": str(m.id),
-        "catalog_id": m.catalog_id,           # VIB-Nr (e.g. "VIB-12345")
+        "catalog_id": m.catalog_id,
         "source": "vib-kg",
-        "source_url": m.source_url,            # direct link to VIB-KG listing
-
-        # ── Machine info ──────────────────────────────────────────────────────
+        "source_url": m.source_url,
         "name": m.name,
         "brand": m.brand,
         "model": specs.get("Model") or specs.get("model"),
-        "machine_type": m.machine_type,        # e.g. "Turret Punch Press"
-        "condition": m.condition,              # e.g. "Good", "Used"
+        "machine_type": m.machine_type,
+        "condition": m.condition,
         "year_of_manufacture": m.year_of_manufacture,
         "country_of_origin": m.country_of_origin,
-        "language": m.language,               # "de" for VIB-KG
-
-        # ── Location ──────────────────────────────────────────────────────────
+        "language": m.language,
         "location": m.location,
-
-        # ── Pricing ───────────────────────────────────────────────────────────
-        "price": m.price,                     # None = "price on request"
+        "price": m.price,
         "currency": m.currency or "EUR",
-
-        # ── Media ─────────────────────────────────────────────────────────────
-        "image_url": primary,                 # main/cover image
-        "extra_images": extras,               # additional images list
-        "all_images": all_images,             # primary + extras combined
+        "image_url": primary,
+        "extra_images": extras,
+        "all_images": all_images,
         "video_url": m.video_url,
-
-        # ── Full specs dict ───────────────────────────────────────────────────
-        "specs": specs,                       # raw key-value pairs from listing
-
-        # ── Description ───────────────────────────────────────────────────────
+        "specs": specs,
         "description": m.description,
-
-        # ── Stats ─────────────────────────────────────────────────────────────
         "view_count": m.view_count,
         "click_count": m.click_count,
         "is_featured": m.is_featured,
-
-        # ── Timestamps ────────────────────────────────────────────────────────
         "created_at": m.created_at.isoformat() if m.created_at else None,
         "updated_at": m.updated_at.isoformat() if m.updated_at else None,
     }
@@ -82,24 +64,19 @@ def _full_dict(m: Machine) -> dict:
 @router.get("/machines")
 async def list_vibkg_machines(
     q: Optional[str] = Query(None, description="Search name, brand, type or description"),
-    brand: Optional[str] = Query(None, description="Filter by brand (partial match)"),
-    machine_type: Optional[str] = Query(None, description="Filter by machine type (partial match)"),
-    condition: Optional[str] = Query(None, description="Filter by condition"),
-    location: Optional[str] = Query(None, description="Filter by location (partial match)"),
-    year_min: Optional[int] = Query(None, description="Minimum year of manufacture"),
-    year_max: Optional[int] = Query(None, description="Maximum year of manufacture"),
-    has_price: Optional[bool] = Query(None, description="true = only machines with price, false = price on request"),
-    has_image: Optional[bool] = Query(None, description="true = only machines with at least one image"),
+    brand: Optional[str] = Query(None),
+    machine_type: Optional[str] = Query(None),
+    condition: Optional[str] = Query(None),
+    location: Optional[str] = Query(None),
+    year_min: Optional[int] = Query(None),
+    year_max: Optional[int] = Query(None),
+    has_price: Optional[bool] = Query(None),
+    has_image: Optional[bool] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    List all VIB-KG machines with optional filters.
-
-    Returns full machine data including every image, spec, location, brand,
-    condition, year, catalog ID, and source URL.
-    """
+    """List all VIB-KG machines with optional filters and pagination."""
     stmt = select(Machine).where(Machine.site_name == "vib-kg")
 
     if q:
@@ -144,12 +121,7 @@ async def list_vibkg_machines(
 
 @router.get("/machines/{machine_id}")
 async def get_vibkg_machine(machine_id: str, db: AsyncSession = Depends(get_db)):
-    """
-    Get a single VIB-KG machine by its UUID.
-
-    Returns all fields: name, brand, model, specs, all images, location,
-    condition, year, catalog_id, source URL, timestamps, etc.
-    """
+    """Get a single VIB-KG machine by UUID — all fields."""
     try:
         uid = _uuid.UUID(machine_id)
     except ValueError:
@@ -164,20 +136,33 @@ async def get_vibkg_machine(machine_id: str, db: AsyncSession = Depends(get_db))
     return _full_dict(machine)
 
 
+@router.delete("/machines/{machine_id}")
+async def delete_vibkg_machine(machine_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a VIB-KG machine by UUID."""
+    try:
+        uid = _uuid.UUID(machine_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid machine ID format")
+
+    machine = await db.scalar(
+        select(Machine).where(Machine.id == uid, Machine.site_name == "vib-kg")
+    )
+    if not machine:
+        raise HTTPException(status_code=404, detail="VIB-KG machine not found")
+
+    await db.execute(delete(Machine).where(Machine.id == uid))
+    await db.commit()
+
+    return {"deleted": True, "id": machine_id}
+
+
 @router.get("/filters")
 async def vibkg_filters(db: AsyncSession = Depends(get_db)):
-    """
-    Returns all distinct filter values for VIB-KG stock:
-    brands, machine types, conditions, locations, year range.
-
-    Use this to populate dropdowns in your UI.
-    """
-    # Total count
+    """All distinct filter values — brands, types, conditions, locations, year range."""
     total = await db.scalar(
         select(func.count(Machine.id)).where(Machine.site_name == "vib-kg")
     )
 
-    # Brands
     brands_rows = await db.execute(
         select(Machine.brand, func.count(Machine.id).label("count"))
         .where(Machine.site_name == "vib-kg", Machine.brand.isnot(None))
@@ -186,7 +171,6 @@ async def vibkg_filters(db: AsyncSession = Depends(get_db)):
     )
     brands = [{"brand": r.brand, "count": r.count} for r in brands_rows]
 
-    # Machine types
     types_rows = await db.execute(
         select(Machine.machine_type, func.count(Machine.id).label("count"))
         .where(Machine.site_name == "vib-kg", Machine.machine_type.isnot(None))
@@ -195,7 +179,6 @@ async def vibkg_filters(db: AsyncSession = Depends(get_db)):
     )
     machine_types = [{"type": r.machine_type, "count": r.count} for r in types_rows]
 
-    # Conditions
     cond_rows = await db.execute(
         select(Machine.condition, func.count(Machine.id).label("count"))
         .where(Machine.site_name == "vib-kg", Machine.condition.isnot(None))
@@ -204,7 +187,6 @@ async def vibkg_filters(db: AsyncSession = Depends(get_db)):
     )
     conditions = [{"condition": r.condition, "count": r.count} for r in cond_rows]
 
-    # Locations
     loc_rows = await db.execute(
         select(Machine.location, func.count(Machine.id).label("count"))
         .where(Machine.site_name == "vib-kg", Machine.location.isnot(None))
@@ -213,7 +195,6 @@ async def vibkg_filters(db: AsyncSession = Depends(get_db)):
     )
     locations = [{"location": r.location, "count": r.count} for r in loc_rows]
 
-    # Year range
     year_row = await db.execute(
         select(
             func.min(Machine.year_of_manufacture).label("min"),
@@ -222,7 +203,6 @@ async def vibkg_filters(db: AsyncSession = Depends(get_db)):
     )
     year_range = year_row.one()
 
-    # With image / without image counts
     with_image = await db.scalar(
         select(func.count(Machine.id)).where(
             Machine.site_name == "vib-kg", Machine.image_url.isnot(None)
@@ -239,10 +219,7 @@ async def vibkg_filters(db: AsyncSession = Depends(get_db)):
         "total_machines": total,
         "with_image": with_image,
         "with_price": with_price,
-        "year_range": {
-            "min": year_range.min,
-            "max": year_range.max,
-        },
+        "year_range": {"min": year_range.min, "max": year_range.max},
         "brands": brands,
         "machine_types": machine_types,
         "conditions": conditions,
