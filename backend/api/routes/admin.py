@@ -1350,13 +1350,25 @@ async def list_machines(
     def _derive_model(m: Machine) -> str | None:
         """Return model value: from specs first, then strip brand from name."""
         specs = m.specs or {}
+        # 1. Explicit specs field (VIB-KG stores specs["Model"])
         model_val = (specs.get("Model") or specs.get("model") or "").strip()
-        if not model_val and m.brand and m.name:
+        if model_val:
+            return model_val
+        if not m.name:
+            return None
+        n = m.name.strip()
+        # 2. Brand is set — strip brand prefix from name
+        if m.brand:
             b = m.brand.strip()
-            n = m.name.strip()
             if n.upper().startswith(b.upper()):
-                model_val = n[len(b):].strip(" -:/")
-        return model_val or None
+                result = n[len(b):].strip(" -:/")
+                if result:
+                    return result
+        # 3. No brand — skip first word as implied brand, return rest as model
+        parts = n.split(None, 1)
+        if len(parts) > 1:
+            return parts[1].strip()
+        return None
 
     def _m(m: Machine) -> dict:
         return {

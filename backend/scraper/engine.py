@@ -777,13 +777,15 @@ class AdaptiveEngine:
         item["specs"] = specs if specs else None
 
         # ── Brand + Model from manufacturer_raw ───────────────────────
-        # "LIEBHERR LC 180" → brand="LIEBHERR", name="LIEBHERR LC 180"
+        # "LIEBHERR LC 180" → brand="LIEBHERR", model="LC 180", name="LIEBHERR LC 180"
         mfr_raw = item.pop("manufacturer_raw", "") or ""
         if mfr_raw:
             item["name"] = mfr_raw
-            # First word is the brand
+            # First word is the brand, rest is the model
             parts = mfr_raw.split()
             item["brand"] = parts[0].upper() if parts else mfr_raw
+            if len(parts) > 1:
+                specs["Model"] = " ".join(parts[1:])
         else:
             # Fallback: page title  "VDF Boehringer DUS 560 - EMUK GmbH ..."
             title_el = soup.find("title")
@@ -794,6 +796,8 @@ class AdaptiveEngine:
                 item["name"] = name or raw_title
                 parts = name.split()
                 item["brand"] = parts[0].upper() if parts else ""
+                if len(parts) > 1:
+                    specs["Model"] = " ".join(parts[1:])
             else:
                 item["name"] = url.rstrip("/").split("/")[-1].replace("-", " ").title()
 

@@ -173,6 +173,16 @@ async def main():
             specs       = _parse_specs(desc_html)
             if p.get("capacity"):
                 specs["Capacity"] = p["capacity"]
+            # Store Model in specs: title minus brand prefix
+            if brand and title.upper().startswith(brand.upper()):
+                model_val = title[len(brand):].strip(" -:/")
+                if model_val:
+                    specs["Model"] = model_val
+            elif not brand and title:
+                # No brand found — skip first word, use rest as model
+                parts = title.split(None, 1)
+                if len(parts) > 1:
+                    specs["Model"] = parts[1].strip()
             description = re.sub(r"<[^>]+>", " ", desc_html).strip() or None
 
             raw_images  = p.get("image") or []
