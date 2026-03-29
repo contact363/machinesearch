@@ -256,6 +256,59 @@ async def main():
     logger.info("  Saved to DB   : %d", new_count)
     logger.info("  Skipped/dupes : %d", skip_count)
     logger.info("=" * 60)
+
+    # ── Step 3: sync deletions — remove sold/gone machines from DB ─────
+    # Any URL in our DB that is no longer on the VIB-KG listing page
+    # gets its status checked. If 404 / no machine content → delete from DB.
+    logger.info("Starting sync: checking for sold/removed machines...")
+    from sqlalchemy import select as sa_select, delete as sa_delete
+
+    live_urls = set(detail_urls)
+
+    async with SessionLocal() as session:
+        result = await session.execute(
+            sa_select(Machine.id, Machine.source_url).where(Machine.site_name == "vib-kg")
+        )
+        db_machines = result.all()  # list of (id, source_url)
+
+    # Find URLs in DB but no longer on VIB-KG listing page
+    missing = [(row.id, row.source_url) for row in db_machines if row.source_url not in live_urls]
+    logger.info("  URLs in DB not on listing page: %d — checking each...", len(missing))
+
+    deleted_count = 0
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15, follow_redirects=True) as client:
+        async with SessionLocal() as session:
+            for machine_id, url in missing:
+                try:
+                    await asyncio.sleep(1)
+                    resp = await client.get(url)
+
+                    # 404 or redirect away = definitely gone
+                    if resp.status_code == 404:
+                        await session.execute(sa_delete(Machine).where(Machine.id == machine_id))
+                        await session.commit()
+                        deleted_count += 1
+                        logger.info("  DELETED (404): %s", url[-70:])
+                        continue
+
+                    # Page exists but check if machine content is still there
+                    from bs4 import BeautifulSoup as _BS
+                    soup_check = _BS(resp.text, "lxml")
+                    h1 = soup_check.find("h1")
+                    has_specs = soup_check.find("div", class_="row")
+
+                    if not h1 or not has_specs:
+                        # No machine title or specs = sold / page emptied
+                        await session.execute(sa_delete(Machine).where(Machine.id == machine_id))
+                        await session.commit()
+                        deleted_count += 1
+                        logger.info("  DELETED (no content): %s", url[-70:])
+
+                except Exception as exc:
+                    logger.warning("  CHECK FAILED %s: %s", url[-60:], exc)
+
+    logger.info("Sync complete — deleted %d sold/removed machines from DB", deleted_count)
+    logger.info("=" * 60)
     await engine_db.dispose()
 
 
