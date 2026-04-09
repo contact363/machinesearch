@@ -141,7 +141,7 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(vibkg.router, prefix="/api/v1/vibkg", tags=["vib-kg"])
 app.include_router(corelmachine.router, prefix="/api/v1/corelmachine", tags=["corelmachine"])
 app.include_router(emuk.router, prefix="/api/v1/emuk", tags=["emuk"])
-app.include_router(bg_used_industry.router, prefix="/api/v1/bg-used-industry", tags=["bg-used-industry"])
+app.include_router(bg_used_industry.router, prefix="/api/bg-used-industry", tags=["bg-used-industry"])
 
 
 @app.get("/health", tags=["health"])
