@@ -1352,6 +1352,266 @@ class AdaptiveEngine:
         return all_items
 
     # ------------------------------------------------------------------
+    # BG Used Industry scraper — deep scrape of bg-used-industry.com
+    # ------------------------------------------------------------------
+
+    async def scrape_bg_used_industry(self, config: dict) -> list[dict]:
+        """
+        Full deep scraper for BG Used Industry (bg-used-industry.com).
+
+        The site shows only the 10 most recent machines per category with no
+        pagination.  To capture ALL machines we use two complementary passes:
+
+        Pass 1 — Category listing pages (181 categories × 10 most recent):
+          Collects machine_type from the category nav, guarantees the freshest
+          machines are included.
+
+        Pass 2 — Sequential ID scan (id_start … id_max):
+          Finds machines not visible in category listings (11th, 12th, …).
+          id_start defaults to 3600 (confirmed minimum valid range).
+          id_max is auto-discovered as the highest ID seen in Pass 1.
+
+        Returns raw item dicts ready for parse_item().
+        """
+        site_name = config.get("name", "bg-used-industry")
+        base_url = "https://www.bg-used-industry.com"
+        id_scan_start: int = config.get("id_scan_start", 3600)
+        headers = self._ua.get_headers(base_url)
+        all_items: list[dict] = []
+
+        async with httpx.AsyncClient(headers=headers, timeout=30, follow_redirects=True) as client:
+            # ── Pass 1: Category listing pages ──────────────────────────────
+            try:
+                resp = await client.get(f"{base_url}/?lng=en")
+                resp.raise_for_status()
+            except Exception as exc:
+                logger.error("[%s] Failed to fetch homepage: %s", site_name, exc)
+                return []
+
+            soup = BeautifulSoup(resp.text, "lxml")
+            cat_links: dict[str, str] = {}  # href → category name
+            for a in soup.find_all("a", href=True):
+                href = a.get("href", "")
+                if "t_c=" in href and "t=" in href and "lng=en" in href:
+                    cat_name = a.get_text(strip=True)
+                    if cat_name and href not in cat_links:
+                        cat_links[href] = cat_name
+
+            logger.info("[%s] Found %d category links", site_name, len(cat_links))
+
+            # detail_url → machine_type (from category)
+            detail_map: dict[str, str] = {}
+            seen_ids: set[int] = set()   # track numeric IDs from Pass 1
+
+            for cat_href, cat_name in cat_links.items():
+                cat_url = urljoin(base_url + "/", cat_href.lstrip("./"))
+                try:
+                    await self._delay.human_delay()
+                    resp = await client.get(cat_url)
+                    resp.raise_for_status()
+                except Exception as exc:
+                    logger.warning("[%s] Category '%s' failed: %s", site_name, cat_name, exc)
+                    continue
+
+                cat_soup = BeautifulSoup(resp.text, "lxml")
+                for tdprd in cat_soup.find_all("td", class_="TdPrd"):
+                    link_el = tdprd.find("a", class_="topmenuCopy")
+                    if link_el:
+                        href = link_el.get("href", "")
+                        if href:
+                            detail_url = urljoin(base_url + "/", href)
+                            if detail_url not in detail_map:
+                                detail_map[detail_url] = cat_name
+                            # Track numeric ID
+                            m_id = re.search(r"id=(\d+)", href)
+                            if m_id:
+                                seen_ids.add(int(m_id.group(1)))
+
+            logger.info("[%s] Pass 1: %d unique category-based machine URLs", site_name, len(detail_map))
+
+            # Scrape Pass 1 detail pages
+            for detail_url, machine_type in detail_map.items():
+                try:
+                    await self._delay.human_delay()
+                    resp = await client.get(detail_url)
+                    resp.raise_for_status()
+                    item = self._parse_bg_used_industry_detail(
+                        resp.text, detail_url, base_url, site_name, machine_type
+                    )
+                    if item:
+                        all_items.append(item)
+                except Exception as exc:
+                    logger.warning("[%s] Detail page failed %s: %s", site_name, detail_url, exc)
+
+            # ── Pass 2: Sequential ID scan to find hidden machines ──────────
+            id_max = max(seen_ids) if seen_ids else 0
+            if id_max < id_scan_start:
+                id_max = id_scan_start + 500  # sensible fallback
+
+            logger.info(
+                "[%s] Pass 2: ID scan from %d to %d (%d IDs, skipping %d already seen)",
+                site_name, id_scan_start, id_max, id_max - id_scan_start + 1, len(seen_ids),
+            )
+
+            for machine_id in range(id_scan_start, id_max + 1):
+                if machine_id in seen_ids:
+                    continue  # already collected in Pass 1
+
+                detail_url = f"{base_url}/indexd?id={machine_id}&lng=en"
+                try:
+                    await self._delay.human_delay()
+                    resp = await client.get(detail_url)
+                    resp.raise_for_status()
+                    # Quick validity check before full parse
+                    if 'class="id_number"' not in resp.text:
+                        continue
+                    item = self._parse_bg_used_industry_detail(
+                        resp.text, detail_url, base_url, site_name, ""
+                    )
+                    if item:
+                        all_items.append(item)
+                        logger.debug("[%s] ID scan found machine %d: %s", site_name, machine_id, item.get("name", "")[:40])
+                except Exception as exc:
+                    logger.debug("[%s] ID scan %d failed: %s", site_name, machine_id, exc)
+
+            logger.info("[%s] Pass 2 complete. Total scraped: %d machines", site_name, len(all_items))
+
+        return all_items
+
+    def _parse_bg_used_industry_detail(
+        self, html: str, url: str, base_url: str, site_name: str, machine_type: str
+    ) -> dict | None:
+        """
+        Parse a single BG Used Industry machine detail page.
+
+        HTML structure (inside td.TdPrd):
+          <td class="id_number">#4586</td>
+          <h1>UNION Table Type Horizontal Borer...</h1>
+          <td class="body2">BFT 110/6, spindle ...</td>  ← short spec summary
+          <td class="body1">Spindle\nDiameter ...\n...</td>  ← detailed specs
+          <td class="body2">Control: ...</td>
+          <span class="body2">Year: 1981</span>
+          <span class="body2">Location : Europe</span>
+          <td class="price">€14 000</td>
+          <a class="highslide" href="photos/xxxx_1.jpg">...</a>  ← full images
+        """
+        soup = BeautifulSoup(html, "lxml")
+
+        item: dict = {
+            "site_name": site_name,
+            "source_url": url,
+            "language": "en",
+            "machine_type": machine_type,
+            "currency": "EUR",
+            "price": None,
+        }
+
+        # ── Catalog ID ──────────────────────────────────────────────────
+        id_el = soup.find("td", class_="id_number")
+        if id_el:
+            raw_id = id_el.get_text(strip=True)
+            item["catalog_id"] = raw_id.lstrip("#")
+
+        # ── Name ────────────────────────────────────────────────────────
+        h1 = soup.find("h1")
+        name = h1.get_text(strip=True) if h1 else ""
+        # Strip trailing condition notes like ", in very good used condition, POA"
+        item["name"] = name
+        if not name:
+            # Fallback: derive from URL ?id= segment
+            m = re.search(r"id=(\d+)", url)
+            item["name"] = f"Machine {m.group(1)}" if m else "Unknown"
+            item["name"] = item["name"]
+
+        # ── Brand: first word of name ────────────────────────────────────
+        parts = item["name"].split()
+        item["brand"] = parts[0].upper() if parts else ""
+
+        # ── Model: extract from name (second token if it looks like a model) ─
+        # e.g. "UNION BFT 110/6 Table ..." → model="BFT 110/6"
+        # We'll put the full name as model spec so parser can use it
+        specs: dict = {}
+        if len(parts) > 1:
+            specs["Model"] = " ".join(parts[1:])
+
+        # ── Parse body2 tds and spans for year / location / desc ────────
+        desc_parts: list[str] = []
+        year: int | None = None
+        location: str | None = None
+
+        for tag in soup.find_all(["td", "span"], class_="body2"):
+            txt = tag.get_text(strip=True)
+            lower = txt.lower()
+            if lower.startswith("year:"):
+                m = re.search(r"\b(19|20)\d{2}\b", txt)
+                if m:
+                    year = int(m.group())
+            elif "location" in lower:
+                # "Location : Europe" or "Location: Bulgaria"
+                loc_val = re.split(r"location\s*:?\s*", txt, flags=re.IGNORECASE, maxsplit=1)
+                if len(loc_val) > 1:
+                    location = loc_val[1].strip()
+            elif txt and len(txt) > 5 and txt not in desc_parts:
+                desc_parts.append(txt)
+
+        # ── Detailed specs from body1 td ────────────────────────────────
+        body1 = soup.find("td", class_="body1")
+        if body1:
+            spec_text = body1.get_text(separator="\n", strip=True)
+            if spec_text and len(spec_text) > 10:
+                # Parse key-value pairs from the spec block
+                # Lines alternate: "Section heading" then "Key Value" pairs
+                spec_lines = [l.strip() for l in spec_text.splitlines() if l.strip()]
+                for line in spec_lines:
+                    if line:
+                        desc_parts.append(line)
+
+        item["year_of_manufacture"] = year
+        item["location"] = location or "Bulgaria"
+        item["description"] = "\n".join(desc_parts)[:3000] or None
+        item["specs"] = specs if specs else None
+
+        # ── Price ────────────────────────────────────────────────────────
+        price_el = soup.find("td", class_="price")
+        if price_el:
+            price_raw = price_el.get_text(strip=True)
+            if price_raw and price_raw.strip():
+                item["price"] = price_raw
+            # currency detection
+            if "€" in (price_raw or ""):
+                item["currency"] = "EUR"
+            elif "$" in (price_raw or ""):
+                item["currency"] = "USD"
+
+        # ── Images: highslide links give full-size photos ────────────────
+        images: list[str] = []
+        for a in soup.find_all("a", class_="highslide"):
+            href = a.get("href", "")
+            if href.startswith("photos/"):
+                full = f"{base_url}/{href}"
+                if full not in images:
+                    images.append(full)
+
+        # Fallback: <img src="photos/..."> (thumbnail _m images)
+        if not images:
+            for img in soup.find_all("img"):
+                src = img.get("src", "")
+                if src.startswith("photos/"):
+                    full = f"{base_url}/{src}"
+                    if full not in images:
+                        images.append(full)
+
+        if images:
+            item["image_url"] = images[0]
+            if len(images) > 1:
+                item["extra_images"] = images[1:]
+
+        if not item.get("name") or not item.get("source_url"):
+            return None
+
+        return item
+
+    # ------------------------------------------------------------------
     # Pagination helpers
     # ------------------------------------------------------------------
 
@@ -1454,6 +1714,13 @@ class AdaptiveEngine:
         # ----------------------------------------------------------------
         elif pagination_type == "api_ajmeramachines":
             raw_items = await self.scrape_ajmeramachines_api(config)
+            all_raw.extend(raw_items)
+
+        # ----------------------------------------------------------------
+        # bg-used-industry.com category+detail deep scraper
+        # ----------------------------------------------------------------
+        elif pagination_type == "api_bg_used_industry":
+            raw_items = await self.scrape_bg_used_industry(config)
             all_raw.extend(raw_items)
 
         # ----------------------------------------------------------------
