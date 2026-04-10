@@ -32,6 +32,8 @@ _NAV_LINES = {
     "plastics machinery", "power engineering", "presses", "robots", "shavers",
     "sheet metal machinery", "threading machinery",
     "tube and bar processing machinery", "welders", "wire machinery",
+    # Extra nav/action words
+    "edm", "lots", "mills", "inquiry", "sell", "inquire",
 }
 
 # Keywords that signal end of actual model name
