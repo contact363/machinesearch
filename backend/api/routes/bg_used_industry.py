@@ -20,15 +20,104 @@ router = APIRouter()
 SITE = "bg-used-industry"
 
 
+_NAV_NOISE = "All machines Accessories and tooling"
+
+# Keywords that signal end of actual model name
+_MODEL_CUTOFFS = [
+    ", in very", ", in good", ", used", ", for sale", ", poa", ", po a",
+    " - poa", " poa", ", visible", ", sold", ", refurbished", ", retrofit",
+]
+
+_TYPE_KEYWORDS = {
+    "lathe": "Lathe",
+    "milling": "Milling Machine",
+    "machining centre": "Machining Centre",
+    "machining center": "Machining Centre",
+    "grinder": "Grinding Machine",
+    "grinding": "Grinding Machine",
+    "borer": "Boring Machine",
+    "boring": "Boring Machine",
+    "drill": "Drilling Machine",
+    "drilling": "Drilling Machine",
+    "press": "Press",
+    "saw": "Saw",
+    "band saw": "Band Saw",
+    "welder": "Welding Machine",
+    "welding": "Welding Machine",
+    "laser": "Laser Machine",
+    "plasma": "Plasma Cutter",
+    "edm": "EDM Machine",
+    "router": "Router",
+    "forging": "Forging Machine",
+    "shear": "Shearing Machine",
+    "bending": "Bending Machine",
+    "folding": "Folding Machine",
+    "turning": "Turning Machine",
+    "gear": "Gear Machine",
+    "honing": "Honing Machine",
+    "broaching": "Broaching Machine",
+}
+
+
+def _clean_model(name: str, brand: str) -> str | None:
+    """Strip brand prefix and trailing condition/sales notes from name."""
+    if not name:
+        return None
+    model = name.strip()
+    # Remove brand prefix (case-insensitive)
+    if brand and model.upper().startswith(brand.upper()):
+        model = model[len(brand):].strip()
+    # Cut off at noise phrases
+    lower = model.lower()
+    for cutoff in _MODEL_CUTOFFS:
+        idx = lower.find(cutoff)
+        if idx != -1:
+            model = model[:idx].strip()
+            lower = model.lower()
+    return model or None
+
+
+def _clean_description(desc: str | None) -> str | None:
+    """Remove site navigation menu text that got scraped into description."""
+    if not desc:
+        return None
+    lines = desc.splitlines()
+    cleaned = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Skip lines that are the site navigation dump
+        if line.startswith(_NAV_NOISE) or line.startswith("All machines"):
+            continue
+        cleaned.append(line)
+    result = "\n".join(cleaned).strip()
+    return result or None
+
+
+def _guess_type(name: str) -> str | None:
+    """Guess machine type from name keywords."""
+    if not name:
+        return None
+    lower = name.lower()
+    for keyword, mtype in _TYPE_KEYWORDS.items():
+        if keyword in lower:
+            return mtype
+    return None
+
+
 def _full_dict(m: Machine) -> dict:
-    specs = m.specs or {}
+    name = m.name or ""
+    brand = m.brand or ""
+    model = _clean_model(name, brand)
+    machine_type = m.machine_type or _guess_type(name)
     return {
-        "type": m.machine_type,
-        "brand": m.brand,
-        "model": specs.get("Model") or specs.get("model"),
+        "type": machine_type,
+        "brand": brand or None,
+        "model": model,
         "year": m.year_of_manufacture,
         "location": m.location,
-        "description": m.description,
+        "description": _clean_description(m.description),
         "source_url": m.source_url,
         "image_url": m.image_url,
         "currency": m.currency or "EUR",
