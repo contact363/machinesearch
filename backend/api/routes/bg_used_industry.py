@@ -21,44 +21,18 @@ SITE = "bg-used-industry"
 
 
 def _full_dict(m: Machine) -> dict:
-    """Return every available field for a BG Used Industry machine."""
     specs = m.specs or {}
-
-    primary = m.image_url
-    extras = m.extra_images or []
-    all_images: list[str] = []
-    if primary:
-        all_images.append(primary)
-    for img in extras:
-        if img and img not in all_images:
-            all_images.append(img)
-
     return {
-        "id": str(m.id),
-        "catalog_id": m.catalog_id,
-        "source": SITE,
-        "source_url": m.source_url,
-        "name": m.name,
+        "type": m.machine_type,
         "brand": m.brand,
         "model": specs.get("Model") or specs.get("model"),
-        "machine_type": m.machine_type,
-        "condition": m.condition,
-        "year_of_manufacture": m.year_of_manufacture,
-        "country_of_origin": m.country_of_origin,
-        "language": m.language,
+        "year": m.year_of_manufacture,
         "location": m.location,
-        "price": m.price,
-        "currency": m.currency or "EUR",
-        "image_url": primary,
-        "extra_images": extras,
-        "all_images": all_images,
-        "specs": specs,
         "description": m.description,
-        "view_count": m.view_count,
-        "click_count": m.click_count,
-        "is_featured": m.is_featured,
-        "created_at": m.created_at.isoformat() if m.created_at else None,
-        "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+        "source_url": m.source_url,
+        "image_url": m.image_url,
+        "currency": m.currency or "EUR",
+        "price": m.price,
     }
 
 
