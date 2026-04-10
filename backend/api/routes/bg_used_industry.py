@@ -20,7 +20,19 @@ router = APIRouter()
 SITE = "bg-used-industry"
 
 
-_NAV_NOISE = "All machines Accessories and tooling"
+# All site navigation/category lines that get scraped into description
+_NAV_LINES = {
+    "all machines", "accessories and tooling", "borers", "cleaners",
+    "construction machinery", "cutters", "drills", "food processing machinery",
+    "forging machinery", "forming machinery", "furnaces, hardeners", "furnaces hardeners",
+    "gear machinery", "grinders", "industrial containers", "industrial properties",
+    "lathes", "lifting, transport and earthmoving", "lifting transport and earthmoving",
+    "machining centres", "machining centers", "manuals",
+    "measuring machines and tools", "mining industry", "paper machinery",
+    "plastics machinery", "power engineering", "presses", "robots", "shavers",
+    "sheet metal machinery", "threading machinery",
+    "tube and bar processing machinery", "welders", "wire machinery",
+}
 
 # Keywords that signal end of actual model name
 _MODEL_CUTOFFS = [
@@ -88,7 +100,7 @@ def _clean_description(desc: str | None) -> str | None:
         if not line:
             continue
         # Skip lines that are the site navigation dump
-        if line.startswith(_NAV_NOISE) or line.startswith("All machines"):
+        if line.lower() in _NAV_LINES or line.lower().startswith("all machines"):
             continue
         cleaned.append(line)
     result = "\n".join(cleaned).strip()
