@@ -126,7 +126,7 @@ def _full_dict(m: Machine) -> dict:
     model = _clean_model(name, brand)
     machine_type = m.machine_type or _guess_type(name)
     return {
-        "type": machine_type,
+        "machine_type": machine_type,
         "brand": brand or None,
         "model": model,
         "year": m.year_of_manufacture,
