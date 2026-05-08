@@ -111,6 +111,11 @@ def run_valma(_url):
     valma.main()
 
 
+def run_ajmera(_url):
+    import scraper_ajmera as ajmera
+    ajmera.main()
+
+
 # ── Generic scraper ───────────────────────────────────────────────────────────
 
 # URL path patterns that suggest a product detail page
@@ -416,6 +421,7 @@ def run_generic(start_url):
 KNOWN_SITES = {
     "bg-used-industry.com": run_bg_used,
     "valmatrading.com":     run_valma,
+    "ajmeramachines.com":   run_ajmera,
 }
 
 
