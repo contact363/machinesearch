@@ -116,6 +116,11 @@ def run_ajmera(_url):
     ajmera.main()
 
 
+def run_dabrox(url):
+    import scraper_dabrox as dabrox
+    dabrox.scrape(url)
+
+
 # ── Generic scraper ───────────────────────────────────────────────────────────
 
 # URL path patterns that suggest a product detail page
@@ -422,6 +427,7 @@ KNOWN_SITES = {
     "bg-used-industry.com": run_bg_used,
     "valmatrading.com":     run_valma,
     "ajmeramachines.com":   run_ajmera,
+    "dabrox.com":           run_dabrox,
 }
 
 
