@@ -1,10 +1,9 @@
 """
-Scraper for dabrox.com
-- Accepts a category listing URL (e.g. /forging-stamping-machines/screw-presses/)
-- Handles pagination automatically (/page/2/, /page/3/ ...)
-- Extracts Type, Brand, Model from listing cards + detail page specs table
-- Full-size image by stripping size suffix from thumbnail URL
-- No price (site uses inquiry form)
+Scraper for dabrox.com — all 16 categories, 1,276 machines
+Extracts Brand, Model, Type directly from listing cards (no detail page needed).
+Usage:
+  python scraper_dabrox.py              # scrape all 16 categories
+  python scraper_dabrox.py <url>        # scrape one specific category
 """
 
 import os
@@ -18,7 +17,7 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 BASE_URL   = "https://dabrox.com"
 OUTPUT_DIR = "output"
@@ -29,6 +28,26 @@ HEADERS    = {
         "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
     )
 }
+
+# All 16 machine categories on dabrox.com
+ALL_CATEGORIES = [
+    ("Sheet Stamping Presses",  "https://dabrox.com/forging-stamping-machines/sheet-stamping-presses/"),
+    ("Hot Forging Presses",     "https://dabrox.com/forging-stamping-machines/hot-forging-presses/"),
+    ("Cold Forging Presses",    "https://dabrox.com/forging-stamping-machines/cold-forging-presses/"),
+    ("Trimming Presses",        "https://dabrox.com/forging-stamping-machines/trimming-presses/"),
+    ("Screw Presses",           "https://dabrox.com/forging-stamping-machines/screw-presses/"),
+    ("Knuckle Joint Presses",   "https://dabrox.com/forging-stamping-machines/knuckle-joint-presses/"),
+    ("Forging Hammers",         "https://dabrox.com/forging-stamping-machines/forging-hammers/"),
+    ("Forging Upsetters",       "https://dabrox.com/forging-stamping-machines/forging-upsetters/"),
+    ("Forging Rolls",           "https://dabrox.com/forging-stamping-machines/forging-rolls/"),
+    ("Ring Rolling Machines",   "https://dabrox.com/forging-stamping-machines/ring-rolling-machines/"),
+    ("Open Die Forging",        "https://dabrox.com/forging-stamping-machines/open-die-forging/"),
+    ("Hydraulic Presses",       "https://dabrox.com/forging-stamping-machines/hydraulic-presses/"),
+    ("C-Type Presses",          "https://dabrox.com/forging-stamping-machines/c-type-presses/"),
+    ("Extrusion Presses",       "https://dabrox.com/forging-stamping-machines/extrusion-presses/"),
+    ("Forging Manipulators",    "https://dabrox.com/forging-stamping-machines/forging-manipulators/"),
+    ("Billet Shear",            "https://dabrox.com/forging-stamping-machines/billet-shear/"),
+]
 
 
 def get_soup(url):
@@ -48,172 +67,123 @@ def get_soup(url):
 def clean(text):
     if not text:
         return ""
-    text = text.replace("\xa0", " ").replace("’", "'").replace("—", "-")
+    text = text.replace("\xa0", " ").replace("’", "'").replace("—", "-").replace("–", "-")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
 def full_image(src):
-    """Remove WordPress-style size suffix e.g. -300x225 before extension."""
+    """Remove WordPress-style size suffix e.g. -400x267 before extension."""
     return re.sub(r"-\d+x\d+(\.(jpg|jpeg|png|webp))$", r"\1", src, flags=re.IGNORECASE)
 
 
-def collect_listing_urls(start_url):
-    """Walk all paginated listing pages and return machine detail URLs."""
-    detail_urls = []
-    seen        = set()
-    page_url    = start_url
-
-    while page_url:
-        print(f"  Listing page: {page_url}")
-        soup = get_soup(page_url)
-        if not soup:
-            break
-
-        # Non-machine pages to always skip
-        SKIP_SLUGS = {
-            "about-us", "contact-us", "contact", "about", "privacy-policy",
-            "terms", "faq", "search", "blog", "news", "sitemap",
-            "login", "register", "cart", "checkout",
-        }
-
-        found = 0
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            full = href if href.startswith("http") else urljoin(BASE_URL, href)
-            parsed = urlparse(full)
-            path   = parsed.path.strip("/")
-            slug   = path.split("/")[-1] if path else ""
-            if (
-                "dabrox.com" in parsed.netloc
-                and path
-                and "/" not in path                          # single slug = detail page
-                and full not in seen
-                and slug not in SKIP_SLUGS
-                and not any(s in full for s in ["/page/", "/category/", "/tag/",
-                                                "/forging-stamping-machines/",
-                                                "?", "#", ".com/en", ".com/de"])
-            ):
-                seen.add(full)
-                detail_urls.append(full)
-                found += 1
-
-        print(f"    Found {found} machines")
-
-        # Next page: go sequentially (current + 1), not jump to highest
-        next_url  = None
-        current_n = 1
-        m = re.search(r"/page/(\d+)/?$", page_url.rstrip("/"))
-        if m:
-            current_n = int(m.group(1))
-
-        next_n = current_n + 1
-        candidate = re.sub(r"/page/\d+/?$", "", page_url.rstrip("/")) + f"/page/{next_n}/"
-        # Check if next page exists by looking for its link on current page
-        page_nums = set()
-        for a in soup.find_all("a", href=True):
-            pm = re.search(r"/page/(\d+)/?", a["href"])
-            if pm:
-                page_nums.add(int(pm.group(1)))
-        if next_n in page_nums:
-            next_url = candidate
-        elif page_nums and max(page_nums) > current_n:
-            # Some pages skipped in nav — try next_n directly
-            next_url = candidate
-
-        page_url = next_url
-        if page_url:
-            time.sleep(0.5)
-
-    return detail_urls
-
-
-def parse_detail(url, category_type):
-    """Fetch a machine detail page and extract all fields from the specs table."""
+def scrape_listing_page(url):
+    """
+    Extract all machine cards from one listing page.
+    Card HTML:
+      <article class="product-card">
+        <a class="product-card__image"><img src="thumbnail.jpg"></a>
+        <h3 class="product-card__title"><a href="detail-url">Title</a></h3>
+        <div class="product-card__specs">
+          <dl>
+            <div class="spec-item"><dt>Brand:</dt><dd>Berrenberg</dd></div>
+            <div class="spec-item"><dt>Model:</dt><dd>RSPe 230/300</dd></div>
+            <div class="spec-item"><dt>Type:</dt><dd>Screw press</dd></div>
+            <div class="spec-item--main"><dt>Parameter:</dt><dd>300 ton</dd></div>
+          </dl>
+        </div>
+      </article>
+    """
     soup = get_soup(url)
     if not soup:
-        return None
+        return [], None
 
-    # ── Description from h1 ───────────────────────────────────────────────────
-    h1 = soup.find("h1")
-    description = clean(h1.get_text()) if h1 else NA
+    machines = []
+    for article in soup.find_all("article", class_="product-card"):
 
-    # ── Specifications table ──────────────────────────────────────────────────
-    specs = {}
-    for table in soup.find_all("table"):
-        for row in table.find_all("tr"):
-            cols = row.find_all(["td", "th"])
-            if len(cols) >= 2:
-                key = clean(cols[0].get_text()).rstrip(":").lower()
-                val = clean(cols[1].get_text())
-                if key and val:
-                    specs[key] = val
+        # ── Source URL & Description from title ──────────────────────────────
+        title_tag  = article.find("h3", class_="product-card__title")
+        source_url = ""
+        description = NA
+        if title_tag:
+            a = title_tag.find("a", href=True)
+            if a:
+                source_url  = a["href"] if a["href"].startswith("http") else urljoin(BASE_URL, a["href"])
+                description = clean(a.get_text())
 
-    # Also scan <dl> / definition lists common on dabrox
-    for dl in soup.find_all("dl"):
-        keys   = [clean(dt.get_text()).rstrip(":").lower() for dt in dl.find_all("dt")]
-        values = [clean(dd.get_text()) for dd in dl.find_all("dd")]
-        for k, v in zip(keys, values):
-            if k and v:
-                specs[k] = v
+        # ── Image (full size) ─────────────────────────────────────────────────
+        img_tag   = article.find("a", class_="product-card__image")
+        image_url = ""
+        if img_tag:
+            img = img_tag.find("img", src=True)
+            if img:
+                src       = img["src"]
+                full_src  = src if src.startswith("http") else urljoin(BASE_URL, src)
+                image_url = full_image(full_src)
 
-    # Also scan labeled <div> / <p> pairs (label: value on same line)
-    main = soup.find("main") or soup.find("article") or soup.body
-    if main:
-        for tag in main(["script", "style", "nav", "footer"]):
-            tag.decompose()
-        lines = [clean(l) for l in main.get_text(separator="\n").splitlines() if clean(l)]
-        for line in lines:
-            if ":" in line:
-                parts = line.split(":", 1)
-                k = parts[0].strip().lower()
-                v = parts[1].strip()
-                if k and v and len(k) < 40:
-                    specs.setdefault(k, v)
+        # ── Brand, Model, Type from spec-item dl ─────────────────────────────
+        specs = {}
+        for item in article.find_all("div", class_=re.compile(r"spec-item")):
+            dt = item.find("dt")
+            dd = item.find("dd")
+            if dt and dd:
+                key = clean(dt.get_text()).rstrip(":").lower()
+                val = clean(dd.get_text())
+                specs[key] = val
 
-    def pick(keys):
-        for k in keys:
-            for sk, sv in specs.items():
-                if k.lower() in sk:
-                    return sv
-        return NA
+        brand        = specs.get("brand", NA) or NA
+        model        = specs.get("model", NA) or NA
+        machine_type = specs.get("type",  NA) or NA
 
-    machine_type = pick(["type", "category", "press type", "equipment type"])
-    if machine_type == NA:
-        machine_type = category_type   # fallback to URL category
+        machines.append({
+            "Type":        machine_type,
+            "Brand":       brand,
+            "Model":       model,
+            "Description": description,
+            "Price":       "",
+            "Image URL":   image_url,
+            "Source URL":  source_url,
+        })
 
-    brand = pick(["manufacturer", "brand", "make", "producer"])
-    model = pick(["model"])
+    # ── Next page ─────────────────────────────────────────────────────────────
+    next_url  = None
+    current_n = 1
+    m = re.search(r"/page/(\d+)/?$", url.rstrip("/"))
+    if m:
+        current_n = int(m.group(1))
 
-    # Fallback: parse from h1 — "[Type] [Brand] [Model] — [Capacity]"
-    if (brand == NA or model == NA) and description != NA:
-        # Remove capacity part after " — " or " - "
-        base = re.split(r"\s+[—–-]\s+", description)[0].strip()
-        words = base.split()
-        if len(words) >= 3 and brand == NA:
-            brand = words[1]
-        if len(words) >= 3 and model == NA:
-            model = " ".join(words[2:])
+    page_nums = set()
+    for a in soup.find_all("a", href=True):
+        pm = re.search(r"/page/(\d+)/?", a["href"])
+        if pm:
+            page_nums.add(int(pm.group(1)))
 
-    # ── Full-size image ───────────────────────────────────────────────────────
-    image_url = ""
-    for img in soup.find_all("img", src=True):
-        src = img["src"]
-        if any(s in src.lower() for s in ["logo", "icon", "flag", "avatar", "sprite", "manufacturer"]):
-            continue
-        if "uploads" in src or "media" in src or "images" in src:
-            image_url = full_image(src if src.startswith("http") else urljoin(BASE_URL, src))
-            break
+    next_n = current_n + 1
+    if next_n in page_nums or (page_nums and max(page_nums) >= next_n):
+        base    = re.sub(r"/page/\d+/?$", "", url.rstrip("/"))
+        next_url = f"{base}/page/{next_n}/"
 
-    return {
-        "Type":        machine_type,
-        "Brand":       brand,
-        "Model":       model,
-        "Description": description,
-        "Price":       "",
-        "Image URL":   image_url,
-        "Source URL":  url,
-    }
+    return machines, next_url
+
+
+def scrape_category(label, start_url):
+    """Scrape all pages of one category and return machine records."""
+    print(f"\n  [{label}]")
+    all_machines = []
+    page_url     = start_url
+    page_num     = 1
+
+    while page_url:
+        print(f"    Page {page_num}: {page_url}")
+        machines, next_url = scrape_listing_page(page_url)
+        print(f"    -> {len(machines)} machines")
+        all_machines.extend(machines)
+        page_url  = next_url
+        page_num += 1
+        if next_url:
+            time.sleep(0.5)
+
+    return all_machines
 
 
 def save_excel(df, filepath):
@@ -242,38 +212,25 @@ def save_excel(df, filepath):
     wb.save(filepath)
 
 
-def scrape(start_url):
-    # Derive category name from URL path
-    path_parts    = [p for p in urlparse(start_url).path.strip("/").split("/") if p]
-    category_slug = path_parts[-1] if path_parts else "machines"
-    category_type = category_slug.replace("-", " ").title()
+def run(categories):
+    print("Scraper — dabrox.com")
+    print("=" * 60)
+    print(f"  Categories to scrape: {len(categories)}")
+    print("=" * 60)
 
-    site_label = "dabrox"
-    print(f"Scraper — dabrox.com | Category: {category_type}")
-    print("=" * 55)
-
-    # Step 1: Collect all detail page URLs from listing
-    print("Step 1: Collecting machine URLs from listing pages...")
-    detail_urls = collect_listing_urls(start_url)
-    print(f"\n  Total machines found: {len(detail_urls)}")
-
-    if not detail_urls:
-        print("No machines found. Exiting.")
-        return
-
-    # Step 2: Scrape each detail page
-    print("\nStep 2: Scraping machine detail pages...")
     all_machines = []
+    seen_urls    = set()
 
-    for i, url in enumerate(detail_urls, 1):
-        print(f"  [{i}/{len(detail_urls)}] {url}")
-        try:
-            data = parse_detail(url, category_type)
-            if data:
-                all_machines.append(data)
-        except Exception as e:
-            print(f"    [SKIP] {e}")
-        time.sleep(0.5)
+    for label, cat_url in categories:
+        machines = scrape_category(label, cat_url)
+        new = 0
+        for m in machines:
+            if m["Source URL"] not in seen_urls:
+                seen_urls.add(m["Source URL"])
+                all_machines.append(m)
+                new += 1
+        dupes = len(machines) - new
+        print(f"    Total: {new} unique" + (f" ({dupes} duplicates skipped)" if dupes else ""))
 
     if not all_machines:
         print("No data collected.")
@@ -281,7 +238,6 @@ def scrape(start_url):
 
     df = pd.DataFrame(all_machines)
     df = df[["Type", "Brand", "Model", "Description", "Price", "Image URL", "Source URL"]]
-
     df["Brand"]       = df["Brand"].fillna(NA)
     df["Model"]       = df["Model"].fillna(NA)
     df["Description"] = df["Description"].fillna(NA)
@@ -291,26 +247,31 @@ def scrape(start_url):
     df.sort_values("Type", inplace=True)
     df.reset_index(drop=True, inplace=True)
 
+    suffix      = "all" if len(categories) > 1 else categories[0][0].lower().replace(" ", "-")
     timestamp   = datetime.now().strftime("%Y%m%d_%H%M")
-    output_path = os.path.join(OUTPUT_DIR, f"{site_label}_{category_slug}_{timestamp}.xlsx")
+    output_path = os.path.join(OUTPUT_DIR, f"dabrox_{suffix}_{timestamp}.xlsx")
     save_excel(df, output_path)
 
-    print("\n" + "=" * 55)
-    print("  CRAWL SUMMARY")
-    print("=" * 55)
-    print(f"  Total machines scraped   : {len(df)}")
-    print(f"  Excel saved at           : {os.path.abspath(output_path)}")
-    print("-" * 55)
-    print("  By type:")
+    print("\n" + "=" * 60)
+    print("  FINAL SUMMARY")
+    print("=" * 60)
+    print(f"  Total machines   : {len(df)}")
+    print(f"  Excel saved at   : {os.path.abspath(output_path)}")
+    print("-" * 60)
+    print("  By Type:")
     for t, cnt in df["Type"].value_counts().items():
-        print(f"    {str(t)[:40]:<40}: {cnt}")
-    print("=" * 55)
+        print(f"    {str(t)[:45]:<45}: {cnt}")
+    print("=" * 60)
     print(f"\nDone. Open: {os.path.abspath(output_path)}")
 
 
 def main():
-    url = sys.argv[1] if len(sys.argv) > 1 else "https://dabrox.com/forging-stamping-machines/screw-presses/"
-    scrape(url)
+    if len(sys.argv) > 1:
+        url   = sys.argv[1]
+        label = url.rstrip("/").split("/")[-1].replace("-", " ").title()
+        run([(label, url)])
+    else:
+        run(ALL_CATEGORIES)
 
 
 if __name__ == "__main__":

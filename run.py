@@ -118,7 +118,12 @@ def run_ajmera(_url):
 
 def run_dabrox(url):
     import scraper_dabrox as dabrox
-    dabrox.scrape(url)
+    parsed = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(url)
+    path_parts = [p for p in parsed.path.strip("/").split("/") if p]
+    if len(path_parts) >= 2:
+        dabrox.scrape(url)   # specific category URL
+    else:
+        dabrox.scrape_all()  # homepage → scrape all categories
 
 
 # ── Generic scraper ───────────────────────────────────────────────────────────
