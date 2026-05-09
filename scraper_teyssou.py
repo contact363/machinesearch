@@ -44,6 +44,8 @@ USED_CATEGORIES = [
     ("Notching Machine",                    "/en_GB/shop/category/59"),
     ("Punching Machine",                    "/en_GB/shop/category/62"),
     ("CNC Punching Machine",               "/en_GB/shop/category/63"),
+    ("Press",                              "/en_GB/shop/category/sheet-metal-presse-64"),
+    ("Hydraulic Press",                    "/en_GB/shop/category/sheet-metal-presse-hydraulique-65"),
     ("Press Brake",                         "/en_GB/shop/category/66"),
     ("Rolling Machine",                     "/en_GB/shop/category/67"),
     ("Miscellaneous Equipment",             "/en_GB/shop/category/69"),
@@ -99,8 +101,10 @@ def collect_urls(page_path):
         href = a["href"].split("?")[0].split("#")[0]
         if PRODUCT_RE.search(href):
             full = href if href.startswith("http") else urljoin(BASE_URL, href)
-            if full not in seen:
-                seen.add(full)
+            # Normalize: strip /en_GB prefix so /shop/X and /en_GB/shop/X dedup correctly
+            norm = full.replace(BASE_URL + "/en_GB", BASE_URL)
+            if norm not in seen:
+                seen.add(norm)
                 urls.append(full)
     return urls
 
@@ -222,27 +226,34 @@ def main():
     all_machines = []
     seen_urls    = set()
 
-    # ── SECTION 1: Used Machinery ─────────────────────────────────────────────
+    def norm(u):
+        return u.replace(BASE_URL + "/en_GB", BASE_URL).split("?")[0].split("#")[0]
+
+    # ── SECTION 1: New Machines first (so they own their URLs before used cats) ─
+    print("\n[ NEW MACHINES ]")
+    new_machines_tmp = []
+    for brand_label, brand_path in NEW_MACHINE_PAGES:
+        urls = collect_urls(brand_path)
+        added = [u for u in urls if norm(u) not in seen_urls]
+        print(f"  {brand_label:<35}: {len(added)} machines")
+        for url in added:
+            seen_urls.add(norm(url))
+            new_machines_tmp.append({"url": url, "default_type": brand_label, "is_new": True})
+        time.sleep(0.4)
+
+    # ── SECTION 2: Used Machinery (new machine URLs already claimed above) ──────
     print("\n[ USED MACHINERY ]")
     for cat_type, cat_path in USED_CATEGORIES:
         urls = collect_urls(cat_path)
-        new  = [u for u in urls if u not in seen_urls]
-        print(f"  {cat_type:<35}: {len(new)} machines")
-        for url in new:
-            seen_urls.add(url)
+        added = [u for u in urls if norm(u) not in seen_urls]
+        print(f"  {cat_type:<35}: {len(added)} machines")
+        for url in added:
+            seen_urls.add(norm(url))
             all_machines.append({"url": url, "default_type": cat_type, "is_new": False})
         time.sleep(0.4)
 
-    # ── SECTION 2: New Machines ───────────────────────────────────────────────
-    print("\n[ NEW MACHINES ]")
-    for brand_label, brand_path in NEW_MACHINE_PAGES:
-        urls = collect_urls(brand_path)
-        new  = [u for u in urls if u not in seen_urls]
-        print(f"  {brand_label:<35}: {len(new)} machines")
-        for url in new:
-            seen_urls.add(url)
-            all_machines.append({"url": url, "default_type": brand_label, "is_new": True})
-        time.sleep(0.4)
+    # Append new machines after so display order is used first, new second
+    all_machines.extend(new_machines_tmp)
 
     total = len(all_machines)
     print(f"\n  Total unique machines to scrape: {total}")
