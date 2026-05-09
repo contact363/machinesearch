@@ -112,7 +112,6 @@ def collect_listing(cat_url, cat_type):
 
         description = NA
         image_url   = ""
-        brand       = NA
 
         for a in anchors:
             img = a.find("img", src=True)
@@ -122,29 +121,12 @@ def collect_listing(cat_url, cat_type):
                 txt = clean(a.get_text())
                 if txt:
                     description = txt
-                    # Brand is usually in the next sibling div
-                    nxt = a.find_next_sibling()
-                    if nxt and nxt.name in ("div", "span", "p"):
-                        b = clean(nxt.get_text())
-                        if b and len(b) < 50:
-                            brand = b
 
-        # Model: remove brand from description if brand is known
-        model = NA
-        if description != NA and brand != NA:
-            # Try to find brand in title and take what comes after
-            idx = description.upper().find(brand.upper())
-            if idx != -1:
-                after = description[idx + len(brand):].strip(" -–—:")
-                if after:
-                    model = after
-            if model == NA or not model:
-                model = description  # fallback: use full title
-
+        # Brand and Model will be filled accurately from the detail page
         machines.append({
             "Type":        cat_type,
-            "Brand":       brand,
-            "Model":       model,
+            "Brand":       NA,
+            "Model":       NA,
             "Description": description,
             "Price":       "",
             "Image URL":   image_url,
@@ -158,12 +140,11 @@ def parse_detail(url):
     """
     Fetch detail page for accurate Brand and Model.
 
-    Brand: <span>Brand: <strong>HURON</strong></span>  — look for 'Brand:' label
-    Model: parsed from H1 after removing the known brand name
-    H1 patterns:
-      "FRAISEUSE HURON MU66"            → brand=HURON  model=MU66
-      "Cisaille guillotine - GPS 840 - AMADA" → brand=AMADA  model=GPS 840
-      "Tour CNC SOMAB - UNIMAB 500"     → brand=SOMAB  model=UNIMAB 500
+    Brand and Model are ONLY in <div id="main_caracteristics">:
+      <p>Brand: <strong>HURON</strong></p>
+      <p>Modèle : <strong>MU66</strong></p>
+
+    H1: <h1 itemprop="name">FRAISEUSE HURON MU66</h1>
     """
     soup = get_soup(url)
     if not soup:
@@ -171,58 +152,28 @@ def parse_detail(url):
 
     result = {}
 
-    # ── Brand: look for "Brand:" / "Marque:" label near a <strong> ───────────
-    brand = NA
-    for elem in soup.find_all(["span", "div", "p", "li"]):
-        txt = elem.get_text()
-        if re.search(r"brand\s*:", txt, re.IGNORECASE) or re.search(r"marque\s*:", txt, re.IGNORECASE):
-            strong = elem.find("strong")
-            if strong:
-                b = clean(strong.get_text())
-                if b and b.lower() not in ("x", "-", ""):
-                    brand = b
-                    break
+    # ── Brand & Model: target ONLY #main_caracteristics div ──────────────────
+    main_chars = soup.find("div", id="main_caracteristics")
+    if main_chars:
+        for p in main_chars.find_all("p"):
+            raw  = p.get_text()
+            strong = p.find("strong")
+            if not strong:
+                continue
+            val = clean(strong.get_text())
+            if not val or val.lower() in ("x", "-", ""):
+                continue
+            if re.match(r"\s*Brand\s*:", raw, re.IGNORECASE):
+                result["brand"] = val
+            elif re.match(r"\s*Mod[eè]le\s*:", raw, re.IGNORECASE):
+                result["model"] = val
 
-    if brand != NA:
-        result["brand"] = brand
-
-    # ── H1 = Description, parse Model from it ─────────────────────────────────
-    h1 = soup.find("h1")
+    # ── Description from h1 ───────────────────────────────────────────────────
+    h1 = soup.find("h1", attrs={"itemprop": "name"}) or soup.find("h1")
     if h1:
-        h1_text = clean(h1.get_text())
-        result["description"] = h1_text
+        result["description"] = clean(h1.get_text())
 
-        if brand != NA:
-            # Pattern A: "Type - Model - Brand"  e.g. "Cisaille guillotine - GPS 840 - AMADA"
-            parts = [p.strip() for p in h1_text.split(" - ")]
-            model_found = False
-            for i, part in enumerate(parts):
-                if brand.upper() in part.upper():
-                    # Brand is in this part — model is the OTHER parts (excluding Type first part)
-                    other = [parts[j] for j in range(len(parts)) if j != i and j != 0]
-                    if other:
-                        result["model"] = " - ".join(other)
-                        model_found = True
-                        break
-
-            # Pattern B: "Type Brand - Model"  e.g. "Tour CNC SOMAB - UNIMAB 500"
-            if not model_found and " - " in h1_text:
-                idx = h1_text.upper().find(brand.upper())
-                if idx != -1:
-                    after_brand = h1_text[idx + len(brand):].strip(" -–—:")
-                    if after_brand:
-                        result["model"] = after_brand
-                        model_found = True
-
-            # Pattern C: "TYPE BRAND MODEL"  e.g. "FRAISEUSE HURON MU66"
-            if not model_found:
-                idx = h1_text.upper().find(brand.upper())
-                if idx != -1:
-                    after_brand = h1_text[idx + len(brand):].strip()
-                    if after_brand:
-                        result["model"] = after_brand
-
-    # ── Image (higher res) ────────────────────────────────────────────────────
+    # ── Image ─────────────────────────────────────────────────────────────────
     for img in soup.find_all("img", src=True):
         src = img["src"]
         if "product.product" in src or "product.template" in src:
@@ -288,10 +239,8 @@ def main():
         print(f"  [{i}/{len(all_machines)}] {m['Source URL']}")
         detail = parse_detail(m["Source URL"])
 
-        if detail.get("brand") and detail["brand"] != NA:
-            m["Brand"] = detail["brand"]
-        if detail.get("model") and detail["model"] != NA:
-            m["Model"] = detail["model"]
+        m["Brand"]       = detail.get("brand", NA) or NA
+        m["Model"]       = detail.get("model", NA) or NA
         if detail.get("description"):
             m["Description"] = detail["description"]
         if detail.get("image_url"):
