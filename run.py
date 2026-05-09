@@ -116,6 +116,11 @@ def run_ajmera(_url):
     ajmera.main()
 
 
+def run_teyssou(_url):
+    import scraper_teyssou as teyssou
+    teyssou.main()
+
+
 def run_dabrox(url):
     import scraper_dabrox as dabrox
     parsed = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(url)
@@ -433,6 +438,7 @@ KNOWN_SITES = {
     "valmatrading.com":     run_valma,
     "ajmeramachines.com":   run_ajmera,
     "dabrox.com":           run_dabrox,
+    "teyssou-ra.com":       run_teyssou,
 }
 
 
