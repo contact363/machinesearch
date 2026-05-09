@@ -156,9 +156,14 @@ def collect_listing(cat_url, cat_type):
 
 def parse_detail(url):
     """
-    Fetch detail page for more accurate Brand and Model.
-    Breadcrumb: All Products > [Type] [Brand] - [Model]
-    Specs table has Manufacturer / Brand row.
+    Fetch detail page for accurate Brand and Model.
+
+    Brand: <span>Brand: <strong>HURON</strong></span>  — look for 'Brand:' label
+    Model: parsed from H1 after removing the known brand name
+    H1 patterns:
+      "FRAISEUSE HURON MU66"            → brand=HURON  model=MU66
+      "Cisaille guillotine - GPS 840 - AMADA" → brand=AMADA  model=GPS 840
+      "Tour CNC SOMAB - UNIMAB 500"     → brand=SOMAB  model=UNIMAB 500
     """
     soup = get_soup(url)
     if not soup:
@@ -166,39 +171,58 @@ def parse_detail(url):
 
     result = {}
 
-    # ── Brand from specs table ────────────────────────────────────────────────
-    for row in soup.find_all("tr"):
-        cells = row.find_all(["td", "th"])
-        if len(cells) >= 2:
-            key = clean(cells[0].get_text()).lower()
-            val = clean(cells[1].get_text())
-            if any(k in key for k in ["brand", "fabricant", "manufacturer", "marque"]):
-                if val and val.lower() not in ("x", "-", ""):
-                    result["brand"] = val
+    # ── Brand: look for "Brand:" / "Marque:" label near a <strong> ───────────
+    brand = NA
+    for elem in soup.find_all(["span", "div", "p", "li"]):
+        txt = elem.get_text()
+        if re.search(r"brand\s*:", txt, re.IGNORECASE) or re.search(r"marque\s*:", txt, re.IGNORECASE):
+            strong = elem.find("strong")
+            if strong:
+                b = clean(strong.get_text())
+                if b and b.lower() not in ("x", "-", ""):
+                    brand = b
                     break
 
-    # ── Brand + Model from breadcrumb ─────────────────────────────────────────
-    breadcrumb = soup.find(class_=re.compile(r"breadcrumb", re.I))
-    if breadcrumb:
-        crumbs = [clean(a.get_text()) for a in breadcrumb.find_all("a")]
-        crumbs += [clean(s.get_text()) for s in breadcrumb.find_all("li") if not s.find("a")]
-        # Last crumb usually: "Tour CNC SOMAB - UNIMAB 500"
-        if crumbs:
-            last = crumbs[-1]
-            if " - " in last:
-                parts = last.rsplit(" - ", 1)
-                # parts[0] = "Type Brand", parts[1] = "Model"
-                result.setdefault("model", parts[1].strip())
-                # Brand = last word of parts[0]
-                brand_candidate = parts[0].strip().split()[-1]
-                result.setdefault("brand", brand_candidate)
+    if brand != NA:
+        result["brand"] = brand
 
-    # ── Description from h1 ───────────────────────────────────────────────────
+    # ── H1 = Description, parse Model from it ─────────────────────────────────
     h1 = soup.find("h1")
     if h1:
-        result["description"] = clean(h1.get_text())
+        h1_text = clean(h1.get_text())
+        result["description"] = h1_text
 
-    # ── Image (higher res from product.product) ───────────────────────────────
+        if brand != NA:
+            # Pattern A: "Type - Model - Brand"  e.g. "Cisaille guillotine - GPS 840 - AMADA"
+            parts = [p.strip() for p in h1_text.split(" - ")]
+            model_found = False
+            for i, part in enumerate(parts):
+                if brand.upper() in part.upper():
+                    # Brand is in this part — model is the OTHER parts (excluding Type first part)
+                    other = [parts[j] for j in range(len(parts)) if j != i and j != 0]
+                    if other:
+                        result["model"] = " - ".join(other)
+                        model_found = True
+                        break
+
+            # Pattern B: "Type Brand - Model"  e.g. "Tour CNC SOMAB - UNIMAB 500"
+            if not model_found and " - " in h1_text:
+                idx = h1_text.upper().find(brand.upper())
+                if idx != -1:
+                    after_brand = h1_text[idx + len(brand):].strip(" -–—:")
+                    if after_brand:
+                        result["model"] = after_brand
+                        model_found = True
+
+            # Pattern C: "TYPE BRAND MODEL"  e.g. "FRAISEUSE HURON MU66"
+            if not model_found:
+                idx = h1_text.upper().find(brand.upper())
+                if idx != -1:
+                    after_brand = h1_text[idx + len(brand):].strip()
+                    if after_brand:
+                        result["model"] = after_brand
+
+    # ── Image (higher res) ────────────────────────────────────────────────────
     for img in soup.find_all("img", src=True):
         src = img["src"]
         if "product.product" in src or "product.template" in src:
