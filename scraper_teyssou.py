@@ -1,13 +1,17 @@
 """
 Scraper for teyssou-ra.com/en_GB
-- 14 categories, no pagination
-- Extracts Type/Brand/Model/Description/Image from listing cards + detail pages
-- No price (site uses Contact Us instead)
+- Used Machinery  : 14 categories (~66 machines)
+- New Machines    : DENER, LISSMAC, BRETON (~30 machines)
+- Total target    : ~96 machines
+
+Fallbacks:
+  Brand not found  → "Brand-Unknown"
+  Model not found  → "Model-Unknown"
+  Type  not found  → "Type-Unknown"
 """
 
 import os
 import re
-import sys
 import time
 import requests
 from bs4 import BeautifulSoup
@@ -20,7 +24,6 @@ from urllib.parse import urljoin
 
 BASE_URL   = "https://www.teyssou-ra.com"
 OUTPUT_DIR = "output"
-NA         = "Not Available"
 HEADERS    = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -28,26 +31,32 @@ HEADERS    = {
     )
 }
 
-# All 14 categories — (Type label, listing URL)
-ALL_CATEGORIES = [
-    # Mechanical
-    ("Centre d'Usinage",                   "https://www.teyssou-ra.com/en_GB/shop/category/27"),
-    ("Fraiseuse",                           "https://www.teyssou-ra.com/en_GB/shop/category/32"),
-    ("Rectifieuse",                         "https://www.teyssou-ra.com/en_GB/shop/category/39"),
-    ("Scie",                                "https://www.teyssou-ra.com/en_GB/shop/category/42"),
-    ("Tour",                                "https://www.teyssou-ra.com/en_GB/shop/category/47"),
-    # Sheet Metal
-    ("Cisaille Guillotine",                 "https://www.teyssou-ra.com/en_GB/shop/category/55"),
-    ("Decoupe Laser",                       "https://www.teyssou-ra.com/en_GB/shop/category/57"),
-    ("Ebavureuse",                          "https://www.teyssou-ra.com/en_GB/shop/category/58"),
-    ("Encocheuse",                          "https://www.teyssou-ra.com/en_GB/shop/category/59"),
-    ("Poinconneuse",                        "https://www.teyssou-ra.com/en_GB/shop/category/62"),
-    ("Poinconneuse A Commande Numerique",   "https://www.teyssou-ra.com/en_GB/shop/category/63"),
-    ("Presse Plieuse",                      "https://www.teyssou-ra.com/en_GB/shop/category/66"),
-    ("Rouleuse",                            "https://www.teyssou-ra.com/en_GB/shop/category/67"),
-    # Misc
-    ("Materiel Divers",                     "https://www.teyssou-ra.com/en_GB/shop/category/69"),
+# ── Used Machinery categories ─────────────────────────────────────────────────
+USED_CATEGORIES = [
+    ("Machining Center",                    "/en_GB/shop/category/27"),
+    ("Milling Machine",                     "/en_GB/shop/category/32"),
+    ("Grinding Machine",                    "/en_GB/shop/category/39"),
+    ("Saw",                                 "/en_GB/shop/category/42"),
+    ("Lathe",                               "/en_GB/shop/category/47"),
+    ("Guillotine Shear",                    "/en_GB/shop/category/55"),
+    ("Laser Cutting",                       "/en_GB/shop/category/57"),
+    ("Deburring Machine",                   "/en_GB/shop/category/58"),
+    ("Notching Machine",                    "/en_GB/shop/category/59"),
+    ("Punching Machine",                    "/en_GB/shop/category/62"),
+    ("CNC Punching Machine",               "/en_GB/shop/category/63"),
+    ("Press Brake",                         "/en_GB/shop/category/66"),
+    ("Rolling Machine",                     "/en_GB/shop/category/67"),
+    ("Miscellaneous Equipment",             "/en_GB/shop/category/69"),
 ]
+
+# ── New Machines brand pages ──────────────────────────────────────────────────
+NEW_MACHINE_PAGES = [
+    ("DENER",    "/en_GB/dener"),
+    ("LISSMAC",  "/en_GB/lissmac"),
+    ("BRETON",   "/en_GB/breton"),
+]
+
+PRODUCT_RE = re.compile(r"/shop/[^/?#]+-\d+")
 
 
 def get_soup(url):
@@ -67,121 +76,116 @@ def get_soup(url):
 def clean(text):
     if not text:
         return ""
-    text = text.replace("\xa0", " ").replace("'", "'")
+    text = text.replace("\xa0", " ").replace("’", "'").replace("&#39;", "'")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
 def full_image(src):
-    """Upgrade image_512 to image_1024 for better resolution."""
     src = src.replace("/image_512/", "/image_1024/")
     return src if src.startswith("http") else urljoin(BASE_URL, src)
 
 
-def collect_listing(cat_url, cat_type):
-    """
-    Scrape a category listing page.
-    Product URL pattern: /en_GB/shop/[slug]-[id]
-    Card structure (no CSS classes):
-      <a href="product-url"><img src="..."></a>   ← image
-      <a href="product-url">Title text</a>         ← title / description
-      <div>Brand</div>                              ← brand
-    """
-    soup = get_soup(cat_url)
+# ── Collect product URLs from a listing page ──────────────────────────────────
+
+def collect_urls(page_path):
+    url  = urljoin(BASE_URL, page_path)
+    soup = get_soup(url)
     if not soup:
         return []
 
-    PRODUCT_RE = re.compile(r"/en_GB/shop/[^/?]+-\d+")
-
-    # Gather all product URLs
-    seen_urls = set()
-    ordered   = []
+    seen, urls = set(), []
     for a in soup.find_all("a", href=True):
-        href = a["href"].split("?")[0]
+        href = a["href"].split("?")[0].split("#")[0]
         if PRODUCT_RE.search(href):
             full = href if href.startswith("http") else urljoin(BASE_URL, href)
-            if full not in seen_urls:
-                seen_urls.add(full)
-                ordered.append(full)
-
-    machines = []
-    for product_url in ordered:
-        # Find all <a> tags pointing to this product
-        path    = product_url.replace(BASE_URL, "")
-        anchors = soup.find_all("a", href=re.compile(re.escape(path)))
-
-        description = NA
-        image_url   = ""
-
-        for a in anchors:
-            img = a.find("img", src=True)
-            if img:
-                image_url = full_image(img["src"])
-            else:
-                txt = clean(a.get_text())
-                if txt:
-                    description = txt
-
-        # Brand and Model will be filled accurately from the detail page
-        machines.append({
-            "Type":        cat_type,
-            "Brand":       NA,
-            "Model":       NA,
-            "Description": description,
-            "Price":       "",
-            "Image URL":   image_url,
-            "Source URL":  product_url,
-        })
-
-    return machines
+            if full not in seen:
+                seen.add(full)
+                urls.append(full)
+    return urls
 
 
-def parse_detail(url):
+# ── Parse a machine detail page ───────────────────────────────────────────────
+
+def parse_detail(url, default_type="Type-Unknown", is_new=False):
     """
-    Fetch detail page for accurate Brand and Model.
-
-    Brand and Model are ONLY in <div id="main_caracteristics">:
-      <p>Brand: <strong>HURON</strong></p>
-      <p>Modèle : <strong>MU66</strong></p>
-
-    H1: <h1 itemprop="name">FRAISEUSE HURON MU66</h1>
+    is_new=False (Used Machines): Type = category name (never override from H1)
+    is_new=True  (New Machines) : Type = first part of H1 before ' - '
     """
     soup = get_soup(url)
     if not soup:
-        return {}
+        return None
 
-    result = {}
+    # ── Brand & Model from #main_caracteristics ───────────────────────────────
+    # Used:  <p>Brand: <strong>HURON</strong></p>
+    #        <p>Modèle : <strong>MU66</strong></p>
+    # New:   <p>Marque : <strong>DENER</strong></p>  (no Modèle row)
+    brand = None
+    model = None
 
-    # ── Brand & Model: target ONLY #main_caracteristics div ──────────────────
     main_chars = soup.find("div", id="main_caracteristics")
     if main_chars:
         for p in main_chars.find_all("p"):
-            raw  = p.get_text()
+            raw    = p.get_text(separator=" ")
             strong = p.find("strong")
             if not strong:
                 continue
             val = clean(strong.get_text())
             if not val or val.lower() in ("x", "-", ""):
                 continue
-            if re.match(r"\s*Brand\s*:", raw, re.IGNORECASE):
-                result["brand"] = val
+            if re.match(r"\s*(Brand|Marque)\s*:", raw, re.IGNORECASE):
+                brand = val
             elif re.match(r"\s*Mod[eè]le\s*:", raw, re.IGNORECASE):
-                result["model"] = val
+                model = val
 
-    # ── Description from h1 ───────────────────────────────────────────────────
-    h1 = soup.find("h1", attrs={"itemprop": "name"}) or soup.find("h1")
-    if h1:
-        result["description"] = clean(h1.get_text())
+    # ── H1 ───────────────────────────────────────────────────────────────────
+    h1     = soup.find("h1", attrs={"itemprop": "name"}) or soup.find("h1")
+    h1_txt = clean(h1.get_text()) if h1 else ""
+    description = h1_txt or default_type
+
+    # ── Type ──────────────────────────────────────────────────────────────────
+    if is_new and " - " in h1_txt:
+        # New machine H1: "Cisaille CNC - type AS" → Type = "Cisaille CNC"
+        machine_type = h1_txt.split(" - ")[0].strip() or default_type
+    else:
+        # Used machine: always use the category name
+        machine_type = default_type
+
+    # ── Model from H1 ─────────────────────────────────────────────────────────
+    if model is None and " - " in h1_txt:
+        # "Type - Model" pattern (new machines)
+        parts = h1_txt.split(" - ", 1)
+        if len(parts) == 2 and parts[1].strip():
+            model = parts[1].strip()
+
+    if model is None and brand and h1_txt:
+        # "TYPE BRAND MODEL" pattern (used machines)
+        idx = h1_txt.upper().find(brand.upper())
+        if idx != -1:
+            after = h1_txt[idx + len(brand):].strip(" -–—:")
+            if after:
+                model = after
 
     # ── Image ─────────────────────────────────────────────────────────────────
+    image_url = ""
     for img in soup.find_all("img", src=True):
         src = img["src"]
-        if "product.product" in src or "product.template" in src:
-            result["image_url"] = src if src.startswith("http") else urljoin(BASE_URL, src)
+        if any(k in src for k in ["product.product", "product.template", "product.image"]):
+            image_url = full_image(src)
             break
 
-    return result
+    return {
+        "Type":        machine_type or "Type-Unknown",
+        "Brand":       brand        or "Brand-Unknown",
+        "Model":       model        or "Model-Unknown",
+        "Description": description,
+        "Price":       "",
+        "Image URL":   image_url,
+        "Source URL":  url,
+    }
 
+
+# ── Save Excel ────────────────────────────────────────────────────────────────
 
 def save_excel(df, filepath):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -209,57 +213,59 @@ def save_excel(df, filepath):
     wb.save(filepath)
 
 
+# ── Main ──────────────────────────────────────────────────────────────────────
+
 def main():
-    print("Scraper — teyssou-ra.com")
-    print("=" * 60)
-    print(f"  Categories: {len(ALL_CATEGORIES)}")
+    print("Scraper — teyssou-ra.com (Used + New Machines)")
     print("=" * 60)
 
-    # Step 1: Collect all machine URLs from listing pages
-    print("\nStep 1: Collecting machines from all category pages...")
     all_machines = []
     seen_urls    = set()
 
-    for cat_type, cat_url in ALL_CATEGORIES:
-        machines = collect_listing(cat_url, cat_type)
-        new = 0
-        for m in machines:
-            if m["Source URL"] not in seen_urls:
-                seen_urls.add(m["Source URL"])
-                all_machines.append(m)
-                new += 1
-        print(f"  {cat_type:<40}: {new} machines")
+    # ── SECTION 1: Used Machinery ─────────────────────────────────────────────
+    print("\n[ USED MACHINERY ]")
+    for cat_type, cat_path in USED_CATEGORIES:
+        urls = collect_urls(cat_path)
+        new  = [u for u in urls if u not in seen_urls]
+        print(f"  {cat_type:<35}: {len(new)} machines")
+        for url in new:
+            seen_urls.add(url)
+            all_machines.append({"url": url, "default_type": cat_type, "is_new": False})
+        time.sleep(0.4)
+
+    # ── SECTION 2: New Machines ───────────────────────────────────────────────
+    print("\n[ NEW MACHINES ]")
+    for brand_label, brand_path in NEW_MACHINE_PAGES:
+        urls = collect_urls(brand_path)
+        new  = [u for u in urls if u not in seen_urls]
+        print(f"  {brand_label:<35}: {len(new)} machines")
+        for url in new:
+            seen_urls.add(url)
+            all_machines.append({"url": url, "default_type": brand_label, "is_new": True})
+        time.sleep(0.4)
+
+    total = len(all_machines)
+    print(f"\n  Total unique machines to scrape: {total}")
+
+    # ── Scrape each detail page ───────────────────────────────────────────────
+    print("\n[ SCRAPING DETAIL PAGES ]")
+    records = []
+    for i, item in enumerate(all_machines, 1):
+        print(f"  [{i}/{total}] {item['url']}")
+        try:
+            data = parse_detail(item["url"], item["default_type"], is_new=item.get("is_new", False))
+            if data:
+                records.append(data)
+        except Exception as e:
+            print(f"    [SKIP] {e}")
         time.sleep(0.5)
 
-    print(f"\n  Total unique machines: {len(all_machines)}")
-
-    # Step 2: Fetch detail pages for accurate Brand / Model
-    print("\nStep 2: Fetching detail pages for Brand & Model...")
-    for i, m in enumerate(all_machines, 1):
-        print(f"  [{i}/{len(all_machines)}] {m['Source URL']}")
-        detail = parse_detail(m["Source URL"])
-
-        m["Brand"]       = detail.get("brand", NA) or NA
-        m["Model"]       = detail.get("model", NA) or NA
-        if detail.get("description"):
-            m["Description"] = detail["description"]
-        if detail.get("image_url"):
-            m["Image URL"] = detail["image_url"]
-
-        time.sleep(0.5)
-
-    if not all_machines:
+    if not records:
         print("No data collected.")
         return
 
-    df = pd.DataFrame(all_machines)
+    df = pd.DataFrame(records)
     df = df[["Type", "Brand", "Model", "Description", "Price", "Image URL", "Source URL"]]
-    df["Brand"]       = df["Brand"].fillna(NA)
-    df["Model"]       = df["Model"].fillna(NA)
-    df["Description"] = df["Description"].fillna(NA)
-    df["Price"]       = df["Price"].fillna("")
-    df["Image URL"]   = df["Image URL"].fillna("")
-
     df.sort_values("Type", inplace=True)
     df.reset_index(drop=True, inplace=True)
 
